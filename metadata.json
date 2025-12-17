@@ -1,0 +1,5 @@
+{
+  "name": "SonarScan Sim",
+  "description": "A high-fidelity simulation of multi-beam mechanical sonar scanning in a swimming pool. Demonstrates efficiency gains using adaptive sectoring and variable range strategies compared to naive full-sweep scanning.",
+  "requestFramePermissions": []
+}
