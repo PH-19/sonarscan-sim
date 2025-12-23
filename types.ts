@@ -36,6 +36,7 @@ export interface SonarState extends SonarConfig {
   lastScanTime: number; // Timestamp of last full cycle
   cycleDuration: number; // Duration of last cycle
   detectedPoints: Vector2[];
+  matchedPoints: Vector2[];
 }
 
 export interface EngineEvalMetrics {
@@ -47,6 +48,21 @@ export interface EngineEvalMetrics {
   trackingRMSEm: number;
   p90TrackingErrorM: number;
   avgRevisitIntervalSec: number;
+  falseAlarmsPerSec: number;
+  detectionHitRate: number; // [0, 1]
+  avgLocalizationErrorM: number;
+  p90LocalizationErrorM: number;
+  avgTimeToFirstDetectionSec: number;
+  p90TimeToFirstDetectionSec: number;
+
+  // Paper-aligned metrics (AquaScan / Ping360, per-frame)
+  precision: number;
+  recall: number;
+  f1: number;
+  mdr: number; // miss detection rate
+  meanIoU: number;
+  fps: number;
+  trackingRate: number; // TR
 }
 
 export interface SimulationMetrics {
@@ -58,6 +74,34 @@ export interface SimulationMetrics {
   trackingRMSEmOptimized: number;
   avgScanRateHzNaive: number;
   avgScanRateHzOptimized: number;
+  falseAlarmsPerSecNaive: number;
+  falseAlarmsPerSecOptimized: number;
+  detectionHitRateNaive: number;
+  detectionHitRateOptimized: number;
+  avgLocalizationErrorMNaive: number;
+  avgLocalizationErrorMOptimized: number;
+  p90LocalizationErrorMNaive: number;
+  p90LocalizationErrorMOptimized: number;
+  avgTimeToFirstDetectionSecNaive: number;
+  avgTimeToFirstDetectionSecOptimized: number;
+  p90TimeToFirstDetectionSecNaive: number;
+  p90TimeToFirstDetectionSecOptimized: number;
+
+  // Paper-aligned metrics (per engine)
+  fpsNaive: number;
+  fpsOptimized: number;
+  trackingRateNaive: number;
+  trackingRateOptimized: number;
+  precisionNaive: number;
+  precisionOptimized: number;
+  recallNaive: number;
+  recallOptimized: number;
+  f1Naive: number;
+  f1Optimized: number;
+  mdrNaive: number;
+  mdrOptimized: number;
+  meanIoUNaive: number;
+  meanIoUOptimized: number;
 }
 
 export type StrategyType = 'NAIVE' | 'OPTIMIZED';
