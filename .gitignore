@@ -10,7 +10,32 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+output/
+tmp/
+CoAqua/
+CoAqua.zip
+!experiments/e2e_population_sweep/output/
+experiments/e2e_population_sweep/output/*
+!experiments/e2e_population_sweep/output/.gitkeep
+experiments/e2e_population_sweep/report/*
+!experiments/e2e_population_sweep/report/.gitkeep
+experiments/**/output/*
+!experiments/**/output/.gitkeep
+experiments/**/report/*
+!experiments/**/report/.gitkeep
+experiments/**/bundles/
+*.jsonl
+*.csv
+*.zip
+*.tar.gz
+*.aux
+*.bbl
+*.blg
+*.out
+*.synctex.gz
 *.local
+__pycache__/
+*.py[cod]
 
 # Editor directories and files
 .vscode/*

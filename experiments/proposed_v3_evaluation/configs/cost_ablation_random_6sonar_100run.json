@@ -1,0 +1,26 @@
+{
+  "experimentId": "proposed_v3_evaluation_cost_ablation_random_6sonar",
+  "benchmarkId": "proposed_v3_cost_ablation_random_6sonar_100run_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "movementModels": ["random_reflect"],
+  "swimmerCounts": [10, 20],
+  "restFraction": 0.15,
+  "durationSec": 120,
+  "seeds": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  "strategies": [
+    "BELIEF_PSO_V3",
+    "BELIEF_PSO_V3_NO_COVERAGE",
+    "BELIEF_PSO_V3_NO_UNCERTAINTY",
+    "BELIEF_PSO_V3_FIXED_RANGE",
+    "BELIEF_PSO_V3_NO_PSO"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "sonarCount": 6,
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 20,
+  "warmupSec": 15,
+  "tdmaEnabled": false,
+  "experimentOutputRoot": "experiments/proposed_v3_evaluation/output"
+}

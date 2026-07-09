@@ -1,11 +1,15 @@
 ## 本仓库做什么
 
-这个项目用一个轻量的 TypeScript/React 仿真，比较两种多声呐扫描策略的效果差异：
+这个项目用 TypeScript/React 仿真物理、成像、检测、跟踪和指标，用 Python 实现可替换的扫描策略，比较两种多声呐扫描策略的效果差异：
 
-- `NAIVE`：每个声呐固定最大量程，全扇区往返扫
-- `OPTIMIZED`：更贴近 AquaScan 的 **track-driven 规划**：以 Kalman 预测结果做 **量程 + 扫描角度自适应**（保持连续扫，暂不启用 intermittent scanning），避免直接用真值作为 planner 输入
+- `FULL_SCAN`：每个声呐固定最大量程，在 local `0°↔180°` 连续往返扫
+- `BELIEF_PSO_V3`：当前 proposed method；通过离散 PSO 联合优化 confirmed Kalman beliefs 的 sonar assignment、协方差感知 ROI、range 和 coverage-search budget；planner 不读取真值。V3 保持 V2 框架，使用 latency-tuned `32x30` PSO budget
+- `BELIEF_PSO_V2`：冻结的 previous proposed method，用于版本对照和回归比较
+- `TRUTH_LOOKAHEAD_ORACLE`：仅用于 headless benchmark 的不可部署参考，truth 通过隔离 provider 注入，永远不会进入在线策略 snapshot 或 Python 服务
 
 核心目标是让评测链路更贴近真实的 **scanning imaging sonar（Ping360）**：声呐输出是 2D 灰度强度图（像素为回波强度），而不是“每 ping 直接吐候选点”。本仓库将检测从 **按 ping** 改为 **按 frame**（一轮扫完再检测），并补齐 AquaScan 论文体系的指标与 UI。
+
+策略与模拟器通过 JSON/HTTP 解耦。接口和新增 baseline 的方法见 [STRATEGY_INTEGRATION.md](./STRATEGY_INTEGRATION.md)。
 
 ## 与 AquaScan / Ping360 对齐说明（MobiCom'25）
 
@@ -15,24 +19,25 @@
   - 波束宽度（grads）：水平 2.22 grads（≈2°），垂直 27.78 grads（≈25°）
   - 扫描方式：单波束电机旋转，逐 bearing 输出 range profile，累积成 2D 强度图（angle×range）
 
-- **扫描时长/帧率校准（按论文给的量级）**
-  - `NAIVE` 近似 `1/1`：~6.18s / frame → FPS ≈ 0.162
-  - `OPTIMIZED` 在该泳池尺度下（典型距离 ~27m）通过 **量程 + 角度窗口自适应** 达到 ~3.4s / frame 的量级 → FPS ≈ 0.296（窗口更窄会更快）
-  - 在本仓库中主要由 `SCAN_STEP_ANGLE` 与 `PING360_PROCESSING_OVERHEAD_S` 拟合量级（当前未启用 intermittent scan/slew）
+- **扫描时长/帧率校准（command-level timing model）**
+  - timing regression 对齐公开规格：约 3.4s / 1m / 360°，约 32s / 50m / 360°
+  - 独立物理回归实验：`npm run test:sonar-physics` 只检查 `SonarTimingModel`，不经过策略层
+  - `BELIEF_PSO_V3` 通过量程和角度窗口自适应缩短 ROI command；实际数值必须以 `synthetic-uncalibrated` benchmark 输出为准
+  - 扫描步进耗时、receive guard 与无发射 reposition 使用不同参数
 
 - **physical-aware 双分支去噪 + DBSCAN（结构对齐 paper Fig.8 / §4.3，简化实现）**
   1) `Weak-echo elimination`：对 background-subtracted 强度做全局 percentile 阈值（并设下限）
-  2) Branch A（去噪）：较大 median kernel（这里用二值 majority filter 近似）压制动态噪声/散斑
-  3) Branch B（检测）：较小 median kernel 保留人体簇形态
-  4) 融合：要求 cluster 在去噪分支中保留一定比例（overlap），并通过物理约束筛除细长噪声条
+  2) Range-direction denoise：用 `kernelCap` 控制的二值 range filter 近似 median kernel，压制动态噪声/散斑
+  3) 自适应阈值：结合 fixed threshold、weak echo percentile 和 frame-local 噪声统计
+  4) 物理约束：用 cross-range、range extent 和 aspect ratio 筛除细长噪声条
   5) 聚类：DBSCAN（自行实现，禁止新增依赖），输出 `bbox + amplitude-weighted centroid`
-  6) 自适应 kernel 搜索：从小核逐步增大，直到输出簇满足物理约束；最大 kernel cap=13（论文指出 >13 miss 会激增）
+  6) Kernel cap：最大 kernel cap=13（论文指出 >13 miss 会激增），当前作为 tunable denoise 上限参与检测
 
 ## 更贴近真实的评测链路（按帧：成像 → 背景扣除 → 检测 → 聚类 → 候选 → 匹配/跟踪）
 
 每个 sonar 在一轮扫描（一个 `frame`）内累积一个极坐标强度图：
 
-- angle bins × range bins（扇区为 90°，量程覆盖 `MAX_RANGE_NAIVE`）
+- command-local dense angle bins × range bins（机械范围为 local 0°..180°）
 - 强度包含：
   - **静态结构**：池壁/泳道线（几何射线与墙体/泳道线交点距离 → 稳定强回波带）
   - **动态噪声**：heavy-tail speckle + weak band / ghost（可与人体簇重叠）
@@ -40,16 +45,16 @@
 
 只有当 `frame` 扫描完成时，才运行一次：
 
-1) background subtraction（背景模型为每个 sonar 的 EMA；启动阶段有 warmup frames 作为 background scan）
-2) AquaScan-like physical-aware 检测（双分支 median + DBSCAN）
+1) background subtraction（当前为 frame-local range-bin background profile，后续阶段 4 再用真实数据校准长期背景）
+2) AquaScan-like physical-aware 检测（weak echo elimination + adaptive threshold + range denoise + DBSCAN）
 3) 输出候选 `cluster`：`bbox + centroid(x,y)`
-4) 匹配/更新跟踪（仅 match 成功才更新 `lastSeen/updateTimes` 与 Kalman）
+4) 同一 fusion tick 的多声呐 detections 先去重，再进行一次 Mahalanobis-gated Kalman 更新
 
 ## 评测侧匹配与更新规则
 
 在同一 `timeBucket`（时间桶）内（保持现有去重逻辑）：
 
-- 用“门限半径 + 一对一匹配（greedy by distance）”将候选点与真值 swimmer 做匹配
+- evaluator 使用真值做独立的一对一匹配；tracker 不读取真值，使用 covariance-aware Mahalanobis gating
 - 每个候选点最多匹配一个 swimmer；每个 swimmer 也最多匹配一个候选点
 - 只有匹配成功的候选点，才会：
   - 刷新该 swimmer 的 `lastSeen / updateTimes`（用于 AoI / 扫描频率 / 回访间隔等）
@@ -57,25 +62,16 @@
 - 未匹配的候选点计为误检（false alarm）
 - swimmer 在视场内但未匹配成功，计为漏检机会（miss opportunity）
 
-## Paper-aligned Metrics（默认滑动窗口 10s，可切换 30s）
+## Experiment Metrics（默认滑动窗口 10s，可切换 30s）
 
-新增（基于滑动窗口、按 frame 统计）：
+后续实验的主评价指标先统一为四项：
 
-- `precision / recall / F1`：以 `cluster bbox` 与 `GT bbox` 的 IoU 匹配为 TP（默认阈值 0.1）统计
-- `MDR`（miss detection rate）：`FN / GT`
-- `meanIoU`：匹配到的 TP 对的平均 IoU
-- `FPS`：每个 sonar 的帧率（滑窗内 frame 数 / 时间），再做平均
-- `TR`（tracking rate）：滑窗内至少被成功 match 更新过一次的 swimmer 数 / 总 swimmer 数
-- `falseAlarmsPerSec`：`FP / 秒`（按 frame 统计）
+- `strictTrackAccuracy`：tracking accuracy；按 swimmer 被扫到的 scan opportunity 统计，ID 正确次数 / scan opportunity 次数。
+- `avgAoISec`：Average AoI；当前 active swimmers 的平均扫描间隔，按窗口内 per-swimmer matched detection rate 的倒数计算。
+- `avgScanRateHz`：每个 swimmer 平均每秒 matched detection update 次数。
+- `decisionLatencyP95Ms`：策略规划调用的 wall-clock latency 第 95 百分位，记录在 benchmark `commandMetrics` 中。
 
-保留且仍基于“有效匹配更新”的旧指标（用于观察策略带来的 AoI/跟踪误差变化）：
-
-- `avgAoISec / p90AoISec`
-- `avgScanRateHz / avgRevisitIntervalSec`
-- `trackingRMSEm / p90TrackingErrorM`
-- `avgLocalizationErrorM` / `p90LocalizationErrorM`：匹配点到真值的距离误差（越低越好）
-- `avgTimeToFirstDetectionSec` / `p90TimeToFirstDetectionSec`：从 `enteredAt` 到“首次匹配成功”的时间  
-  - 实现说明：仅统计 **进入时间在评测窗口内** 的 swimmer；尚未首次命中的 swimmer 会按当前时间做截断（censored at now）
+其他 paper-aligned metrics（如 precision/recall/F1、MDR、meanIoU、falseAlarmsPerSec、trackingRMSEm、GOSPA、trackContinuity、p90 AoI 等）仍由 evaluator 和 run summary 保留，后续需要时可重新启用，但当前 summary/report/paper artifact 默认不再用它们做主评价。
 
 ## 可调参数（UI sliders + `constants.ts` 默认值）
 
@@ -90,7 +86,7 @@
 
 - 调高噪声 / 调低阈值：误检上升、定位误差变大
 - 调高阈值：漏检上升、首次发现时间变长
-- NAIVE vs OPTIMIZED：除“更勤/更快”外，还能体现“首次发现时间、误检代价、量程自适应带来的发声等待差异”等
+- FULL_SCAN vs BELIEF_PSO_V3：除 command throughput 外，还能观察首次发现时间、GOSPA、coverage debt 和量程自适应的差异
 
 ## 控制面板参数说明（Dashboard）
 
@@ -109,7 +105,41 @@
 
 ## Run Locally
 
-**Prerequisites:** Node.js
+**Prerequisites:** Node.js、Python 3.10+
 
 1. Install dependencies: `npm install`
-2. Run the app: `npm run dev`
+2. Terminal A 启动 Python 策略服务：`npm run strategy-server`
+3. Terminal B 启动前端模拟器：`npm run dev`
+
+默认比较 `FULL_SCAN` 与 `BELIEF_PSO_V3`。可通过环境变量选择已注册且名称明确的 Python 策略；需要复现实验旧版时显式指定 `BELIEF_PSO_V2`：
+
+```bash
+VITE_BASELINE_STRATEGY=FULL_SCAN VITE_CANDIDATE_STRATEGY=BELIEF_PSO_V3 npm run dev
+VITE_BASELINE_STRATEGY=FULL_SCAN VITE_CANDIDATE_STRATEGY=BELIEF_PSO_V2 npm run dev
+```
+
+策略服务不可用时，新 command 调度暂停，页面顶部会显示 offline；不会把失败 run 静默伪装成另一种策略。
+
+## 如何确认评估实验使用的是哪一版策略
+
+新实验默认主方法是 `BELIEF_PSO_V3`；`BELIEF_PSO_V2` 只作为冻结对照保留。
+
+- UI 默认：`FULL_SCAN` vs `BELIEF_PSO_V3`。也可以通过 URL/query 或环境变量显式覆盖 `candidateStrategy` / `VITE_CANDIDATE_STRATEGY`。
+- Headless config 默认：仓库内通用 benchmark config 已切到 `BELIEF_PSO_V3`。如果 config 的 `strategies` 写了 `BELIEF_PSO_V2`，就会明确跑旧版。
+- 每次 headless run 的 `manifest.json` 会记录 `strategyImplementations`，其中 `implementation`、`codeVersion` 和 `parameters.iterations` 是版本证据。当前 V3 应显示 `strategies.proposed_v3:plan`、`swarmSize: 32`、`iterations: 30`；V2 应显示 `strategies.proposed_v2:plan`、`iterations: 40`。
+- `runs.jsonl` 每行也包含 `strategy` 和 `strategyImplementation`；生成 summary/report 时脚本会优先把 `BELIEF_PSO_V3` 识别为 proposed method，只有旧输出不含 V3 时才回退到 V2。
+
+论文就绪状态、实验矩阵和剩余限制见 [WORKSHOP_READINESS_REPORT.md](./WORKSHOP_READINESS_REPORT.md)。
+
+常用论文实验命令：
+
+```bash
+npm run test:sonar-physics
+npm run experiment:sonar-physics
+npm run benchmark:synthetic -- configs/benchmark/synthetic/smoke.json
+npm run benchmark:readiness -- --skip-gate
+npm run benchmark:ablation -- --skip-gate
+npm run benchmark:oracle -- --skip-gate
+npm run benchmark:summary -- output/benchmarks/<run-directory>
+npm run benchmark:paper -- output/benchmarks/<run-directory>
+```

@@ -1,4 +1,8 @@
-# PSO (Particle Swarm Optimization) 策略设计文档
+# Legacy PSO_V1 设计记录（非当前 proposed method）
+
+> 重要：本文以下内容是早期设计记录，与当前 `strategies/pso.py` 不一致，不能用于论文方法描述。当前 proposed method 是 `BELIEF_PSO_V3`，主实现位于 `strategies/proposed_v3.py`，`strategies/proposed.py` 仅作为当前 proposed 的兼容入口；`BELIEF_PSO_V2` 冻结在 `strategies/proposed_v2.py` 用于版本对照。`PSO_V1` 当前只是历史 heuristic，正式 benchmark 不将其称为 proposed method。
+
+> 当前实现位于 `strategies/pso.py`。TypeScript 模拟器通过 `POST /plan` 获取策略结果，协议见 `STRATEGY_INTEGRATION.md`。
 
 ## 1. 概述 (Overview)
 

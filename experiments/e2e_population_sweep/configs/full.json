@@ -1,0 +1,18 @@
+{
+  "experimentId": "e2e_population_sweep",
+  "benchmarkId": "e2e_population_sweep_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "movementModels": ["random_reflect", "lap_swim_with_rest"],
+  "swimmerCounts": [0, 1, 2, 4, 6, 8, 12, 16],
+  "restFraction": 0.15,
+  "durationSec": 300,
+  "seeds": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+  "strategies": ["FULL_SCAN", "BELIEF_PSO_V3"],
+  "sensorProfile": "synthetic_default_v0",
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 30,
+  "warmupSec": 30,
+  "experimentOutputRoot": "experiments/e2e_population_sweep/output"
+}

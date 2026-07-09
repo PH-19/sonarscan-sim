@@ -1,0 +1,23 @@
+{
+  "benchmarkId": "stage5a_synthetic_smoke",
+  "outputLabel": "synthetic-uncalibrated",
+  "scenarios": [
+    "empty_pool",
+    "single_straight",
+    "two_swimmers_crossing"
+  ],
+  "durationSec": 120,
+  "seeds": [1, 2],
+  "strategies": [
+    "FULL_SCAN",
+    "ROUND_ROBIN_SECTOR",
+    "NEAREST_ROI",
+    "BELIEF_PSO_V3"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 10,
+  "warmupSec": 10
+}

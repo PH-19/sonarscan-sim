@@ -1,0 +1,24 @@
+{
+  "experimentId": "e2e_population_sweep_v3_ablation",
+  "benchmarkId": "e2e_population_sweep_pso_v3_ablation_smoke_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "movementModels": ["random_reflect", "lap_swim_with_rest"],
+  "swimmerCounts": [4, 8],
+  "restFraction": 0.15,
+  "durationSec": 60,
+  "seeds": [1, 2],
+  "strategies": [
+    "BELIEF_PSO_V3",
+    "BELIEF_PSO_V3_NO_PSO",
+    "BELIEF_PSO_V3_NO_COVERAGE",
+    "BELIEF_PSO_V3_NO_UNCERTAINTY",
+    "BELIEF_PSO_V3_FIXED_RANGE"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 10,
+  "warmupSec": 10,
+  "experimentOutputRoot": "experiments/e2e_population_sweep/output"
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "ping360_pool_dataset_v1",
+  "createdAt": "2026-06-29T00:00:00Z",
+  "sessions": [
+    {
+      "sessionId": "pool_a_calibration_001",
+      "split": "calibration",
+      "poolId": "pool_a",
+      "poolWidthM": 20,
+      "poolLengthM": 50,
+      "waterTemperatureC": 27,
+      "sonarDepthM": 1.2,
+      "sonarModel": "BlueRobotics Ping360",
+      "frequencyKhz": 750,
+      "sampleCount": 1200,
+      "files": ["data/ping360/pool_a_calibration_001.jsonl"]
+    },
+    {
+      "sessionId": "pool_b_test_001",
+      "split": "test",
+      "poolId": "pool_b",
+      "poolWidthM": 15,
+      "poolLengthM": 30,
+      "waterTemperatureC": 26,
+      "sonarDepthM": 1.2,
+      "sonarModel": "BlueRobotics Ping360",
+      "frequencyKhz": 750,
+      "sampleCount": 1200,
+      "files": ["data/ping360/pool_b_test_001.jsonl"]
+    }
+  ]
+}

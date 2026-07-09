@@ -1,0 +1,20 @@
+{
+  "benchmarkId": "workshop_ablation_precalibration_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "scenarios": ["two_swimmers_crossing", "high_density"],
+  "durationSec": 300,
+  "seeds": [1, 2, 3, 4, 5],
+  "strategies": [
+    "BELIEF_PSO_V3",
+    "BELIEF_PSO_V3_NO_COVERAGE",
+    "BELIEF_PSO_V3_NO_UNCERTAINTY",
+    "BELIEF_PSO_V3_FIXED_RANGE",
+    "BELIEF_PSO_V3_NO_PSO"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 30,
+  "warmupSec": 30
+}

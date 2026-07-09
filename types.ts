@@ -3,11 +3,30 @@ export interface Vector2 {
   y: number;
 }
 
+export type SwimmerMotionKind = 'free_reflect' | 'lane_swim' | 'short_end_rest';
+
+export interface SwimmerMotionProfile {
+  kind: SwimmerMotionKind;
+  laneX?: number;
+  speedMps?: number;
+  longDirection?: 1 | -1;
+  lateralAmplitudeM?: number;
+  lateralPeriodSec?: number;
+  phaseSec?: number;
+  restY?: number;
+}
+
 export interface Swimmer {
   id: string;
   position: Vector2;
   velocity: Vector2; // m/s
   enteredAt: number;
+  motion?: SwimmerMotionProfile;
+}
+
+export interface SwimmerTruth extends Swimmer {
+  // Hidden simulator truth. Strategy and tracker snapshots must never receive this id.
+  truthId: string;
 }
 
 export enum SonarMode {
@@ -19,16 +38,21 @@ export enum SonarMode {
 export interface SonarConfig {
   id: string;
   position: Vector2;
-  angle: number; // Degrees
-  mountAngle: number; // Base angle (e.g., 45 for corner)
-  maxAngle: number; // Relative max sweep
-  minAngle: number; // Relative min sweep
+  angle: number; // World bearing of the mechanical sector centre, degrees.
+  mountAngle: number; // World bearing of the mechanical sector centre (legacy name).
+  mountYaw: number; // World bearing corresponding to local mechanical angle 0°.
+  maxLocalAngle: number; // Local mechanical upper bound in degrees, normally 180°.
+  minLocalAngle: number; // Local mechanical lower bound in degrees, normally 0°.
 }
 
 export interface SonarState extends SonarConfig {
-  currentAngle: number; // Degrees
+  available: boolean;
+  currentAngle: number; // Current world bearing, degrees (for rendering/geometry).
+  currentLocalAngle: number; // Current mechanical angle in [minLocalAngle, maxLocalAngle].
+  scanDirection: 1 | -1;
   mode: SonarMode;
-  targetAngle: number; // Where we are trying to go
+  targetAngle: number; // Target world bearing.
+  targetLocalAngle: number;
   scanRange: number; // Current max range setting (meters)
   pingAccumulator: number; // Time since last ping (sec) while scanning
   
@@ -37,6 +61,95 @@ export interface SonarState extends SonarConfig {
   cycleDuration: number; // Duration of last cycle
   detectedPoints: Vector2[];
   matchedPoints: Vector2[];
+  activeCommandId?: string;
+  activeCommandStartedAt?: number;
+  activeCommandEndsAt?: number;
+  commandProgress?: number;
+  activeAction?: StrategyAction;
+  activeScanMinLocalAngle?: number;
+  activeScanMaxLocalAngle?: number;
+  assignedTargetIds?: string[];
+}
+
+export interface SonarCommand {
+  commandId: string;
+  sonarId: string;
+  startLocalAngle: number; // Mechanical angle when submitted, degrees.
+  scanStartLocalAngle: number; // Mechanical angle where transmitting begins after slew.
+  endLocalAngle: number; // Mechanical scan endpoint; may be smaller than scanStartLocalAngle.
+  scanMinLocalAngle: number;
+  scanMaxLocalAngle: number;
+  range: number;
+  angularStepDeg: number;
+  samplesPerBeam: number;
+  pingSlotCount: number; // TDMA transmit slots shared by concurrently available sonars.
+  transmitDurationUs?: number;
+  gain?: number;
+  startTime: number;
+  action?: StrategyAction;
+  assignedTargetIds?: string[];
+  scanWindows?: SonarCommandScanWindow[];
+}
+
+export interface SonarCommandScanWindow {
+  scanStartLocalAngle: number;
+  endLocalAngle: number;
+  scanMinLocalAngle: number;
+  scanMaxLocalAngle: number;
+  range: number;
+  assignedTargetIds?: string[];
+}
+
+export interface BeamReturn {
+  beamIndex: number;
+  time: number;
+  angle: number; // World bearing.
+  localAngle: number;
+  range?: number;
+  intensities: number[];
+}
+
+export interface SonarFrame {
+  sonarId: string;
+  commandId: string;
+  sonarPosition: Vector2;
+  startTime: number;
+  endTime: number;
+  beams: BeamReturn[];
+  angleBins: number;
+  rangeBins: number;
+  startAngle: number; // World bearing of first beam, degrees.
+  endAngle: number; // World bearing of last beam, degrees.
+  startLocalAngle: number;
+  endLocalAngle: number;
+  minAngle: number; // Numeric min of start/end world bearing; do not use for wrap-aware visibility.
+  maxAngle: number; // Numeric max of start/end world bearing; do not use for wrap-aware visibility.
+  range: number;
+  intensities: Float32Array;
+}
+
+export interface Detection {
+  id: string;
+  time: number;
+  sonarId: string;
+  position: Vector2;
+  range: number;
+  bearing: number;
+  confidence: number;
+  intensity: number;
+  bbox?: { aMin: number; aMax: number; rMin: number; rMax: number };
+  source?: 'target' | 'false_alarm';
+}
+
+export interface TrackBelief {
+  trackId: string;
+  position: Vector2;
+  velocity: Vector2;
+  covariance: number[][];
+  age: number;
+  timeSinceUpdate: number;
+  confidence: number;
+  status: 'tentative' | 'confirmed' | 'lost';
 }
 
 export interface EngineEvalMetrics {
@@ -63,6 +176,29 @@ export interface EngineEvalMetrics {
   meanIoU: number;
   fps: number;
   trackingRate: number; // TR
+  trackTruePositives: number;
+  falseTracks: number;
+  missedTracks: number;
+  idSwitches: number;
+  trackFragmentations: number;
+  // Scan-level ID accuracy: correct visible-swimmer track IDs / visible-swimmer scan opportunities.
+  strictTrackAccuracy: number;
+  // Handoff-tolerant scan-level ID accuracy. A one-frame wrong ID is counted wrong,
+  // but a repeated new track ID is promoted as the local reference for that swimmer.
+  localTrackAccuracy: number;
+  // Numerator and denominator for strictTrackAccuracy.
+  strictIdentityTracks: number;
+  // Numerator and denominator for localTrackAccuracy.
+  localIdentityTracks: number;
+  identityTrackOpportunities: number;
+  gospa: number;
+  gospaLocalization: number;
+  gospaMissed: number;
+  gospaFalse: number;
+  trackContinuity: number;
+  deadlineDetection3Sec: number;
+  deadlineDetection5Sec: number;
+  deadlineDetection10Sec: number;
 }
 
 export interface SimulationMetrics {
@@ -92,6 +228,10 @@ export interface SimulationMetrics {
   fpsOptimized: number;
   trackingRateNaive: number;
   trackingRateOptimized: number;
+  strictTrackAccuracyNaive: number;
+  strictTrackAccuracyOptimized: number;
+  localTrackAccuracyNaive: number;
+  localTrackAccuracyOptimized: number;
   precisionNaive: number;
   precisionOptimized: number;
   recallNaive: number;
@@ -104,4 +244,116 @@ export interface SimulationMetrics {
   meanIoUOptimized: number;
 }
 
-export type StrategyType = 'NAIVE' | 'OPTIMIZED';
+export type StrategyType = string;
+export type StrategyAction = 'FULL_SWEEP' | 'TRACK_ROI' | 'SEARCH_SECTOR' | 'SLEW_ONLY' | 'IDLE';
+
+export interface StrategyTrack {
+  id: string;
+  position: Vector2;
+  velocity?: Vector2;
+  covariance?: number[][];
+  age?: number;
+  timeSinceUpdate?: number;
+  confidence?: number;
+  status?: 'tentative' | 'confirmed' | 'lost';
+}
+
+export interface StrategySonar {
+  id: string;
+  position: Vector2;
+  mountAngle: number;
+  mountYaw: number;
+  currentAngle: number;
+  currentLocalAngle: number;
+  minLocalAngle: number;
+  maxLocalAngle: number;
+  scanDirection: 1 | -1;
+  mode?: SonarMode;
+  activeCommandId?: string;
+  activeCommandEndsAt?: number;
+  assignedTargetIds?: string[];
+  coverageBins: StrategyCoverageBin[];
+  available: boolean;
+}
+
+export interface StrategyCoverageBin {
+  minLocalAngle: number;
+  maxLocalAngle: number;
+  lastObservedAt: number;
+  ageSec: number;
+}
+
+export interface StrategySnapshot {
+  simulationTime: number;
+  seed: number;
+  pool: {
+    width: number;
+    length: number;
+  };
+  physics: {
+    speedOfSound: number;
+    slewSpeed: number;
+    scanStepAngle: number;
+    processingOverheadSec: number;
+    scanStepOverheadSec: number;
+    receiveGuardFactor: number;
+    samplesPerBeam: number;
+    samplePeriodSec: number;
+    maxRange: number;
+    tdmaSlotCount: number;
+  };
+  sonars: StrategySonar[];
+  tracks: StrategyTrack[];
+}
+
+export interface SonarStrategyPlan {
+  sonarId: string;
+  minLocalAngle: number; // Local mechanical scan bound, degrees.
+  maxLocalAngle: number; // Local mechanical scan bound, degrees.
+  range: number;
+  angularStepDeg?: number;
+  assignedTargetIds: string[];
+  action?: StrategyAction;
+  scanWindows?: SonarStrategyScanWindow[];
+}
+
+export interface SonarStrategyScanWindow {
+  minLocalAngle: number;
+  maxLocalAngle: number;
+  range?: number;
+  assignedTargetIds?: string[];
+}
+
+export interface StrategyDecision {
+  strategy: StrategyType;
+  generatedAt: number;
+  plans: SonarStrategyPlan[];
+  diagnostics?: StrategyDecisionDiagnostics;
+}
+
+export interface StrategyDecisionDiagnostics {
+  psoEnabled?: boolean;
+  psoEligible?: boolean;
+  psoAccepted?: boolean;
+  psoChangedAssignment?: boolean;
+  trackCount?: number;
+  sonarCount?: number;
+  psoMode?: string;
+  candidateCost?: number | null;
+  fallbackCost?: number | null;
+  seedCost?: number | null;
+  acceptedCostImprovement?: number | null;
+  rejectionReason?: string | null;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface EngineFrameEvent {
+  time: number;
+  sonarId: string;
+  command: SonarCommand;
+  truthCount: number;
+  detectionCount: number;
+  matchedDetectionCount: number;
+  falseAlarmCount: number;
+  trackCount: number;
+}

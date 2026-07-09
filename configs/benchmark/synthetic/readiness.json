@@ -1,0 +1,24 @@
+{
+  "benchmarkId": "workshop_readiness_precalibration_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "scenarios": [
+    "single_straight",
+    "two_swimmers_crossing",
+    "high_density",
+    "sensor_failure"
+  ],
+  "durationSec": 300,
+  "seeds": [1, 2, 3, 4, 5],
+  "strategies": [
+    "FULL_SCAN",
+    "ROUND_ROBIN_SECTOR",
+    "NEAREST_ROI",
+    "BELIEF_PSO_V3"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 30,
+  "warmupSec": 30
+}

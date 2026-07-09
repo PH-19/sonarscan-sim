@@ -1,0 +1,25 @@
+{
+  "experimentId": "e2e_population_sweep_detailed_pso_ablation",
+  "benchmarkId": "e2e_population_sweep_detailed_pso_ablation_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "movementModels": ["random_reflect", "lap_swim_with_rest"],
+  "swimmerCounts": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  "restFraction": 0.15,
+  "durationSec": 90,
+  "seeds": [1, 2, 3, 4, 5],
+  "strategies": [
+    "FULL_SCAN",
+    "ROUND_ROBIN_SECTOR",
+    "ROUND_ROBIN_ROI",
+    "NEAREST_ROI",
+    "BELIEF_PSO_V3_NO_PSO",
+    "BELIEF_PSO_V3"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 20,
+  "warmupSec": 15,
+  "experimentOutputRoot": "experiments/e2e_population_sweep/output"
+}

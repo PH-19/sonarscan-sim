@@ -1,0 +1,27 @@
+{
+  "experimentId": "proposed_v3_evaluation_e2e_random_6sonar_pid",
+  "benchmarkId": "proposed_v3_e2e_random_6sonar_pid_300run_v1",
+  "outputLabel": "synthetic-uncalibrated",
+  "movementModels": ["random_reflect"],
+  "swimmerCounts": [2, 4, 6, 10, 20],
+  "restFraction": 0.15,
+  "durationSec": 90,
+  "seeds": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  "strategies": [
+    "FULL_SCAN",
+    "ROUND_ROBIN_SECTOR",
+    "ROUND_ROBIN_ROI",
+    "NEAREST_ROI",
+    "PID_ROI",
+    "BELIEF_PSO_V3"
+  ],
+  "sensorProfile": "synthetic_default_v0",
+  "sonarCount": 6,
+  "dtSec": 0.1,
+  "sampleIntervalSec": 1,
+  "strategyUpdateIntervalSec": 0.8,
+  "metricsWindowSec": 20,
+  "warmupSec": 15,
+  "tdmaEnabled": false,
+  "experimentOutputRoot": "experiments/proposed_v3_evaluation/output"
+}
