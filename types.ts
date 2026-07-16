@@ -107,6 +107,8 @@ export interface BeamReturn {
   localAngle: number;
   range?: number;
   intensities: number[];
+  /** True when this image row was reconstructed between physical pings. */
+  recovered?: boolean;
 }
 
 export interface SonarFrame {
@@ -117,6 +119,9 @@ export interface SonarFrame {
   endTime: number;
   beams: BeamReturn[];
   angleBins: number;
+  /** Physical ping rows before optional angular recovery. */
+  acquiredAngleBins?: number;
+  recoveryAngularStepDeg?: number;
   rangeBins: number;
   startAngle: number; // World bearing of first beam, degrees.
   endAngle: number; // World bearing of last beam, degrees.
@@ -130,6 +135,8 @@ export interface SonarFrame {
 
 export interface Detection {
   id: string;
+  /** Source frame identity used for per-frame association. */
+  frameId?: string;
   time: number;
   sonarId: string;
   position: Vector2;
@@ -332,13 +339,8 @@ export interface StrategyDecision {
 }
 
 export interface StrategyDecisionDiagnostics {
-  psoEnabled?: boolean;
-  psoEligible?: boolean;
-  psoAccepted?: boolean;
-  psoChangedAssignment?: boolean;
   trackCount?: number;
   sonarCount?: number;
-  psoMode?: string;
   candidateCost?: number | null;
   fallbackCost?: number | null;
   seedCost?: number | null;

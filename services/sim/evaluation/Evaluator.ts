@@ -4,8 +4,7 @@ import { angleToTarget } from '../../../utils/math';
 import { angleInSweep } from '../sonar/AngleSweep';
 
 const DEFAULT_EVAL_WINDOW_SEC = 10;
-// Retain a full workshop run. UI queries still use short windows, while the
-// headless runner can request whole-run metrics without silently losing data.
+// Retain long runs while allowing the UI to query shorter windows.
 const EVAL_RETENTION_SEC = 3600;
 
 type DetectionFrameStats = {

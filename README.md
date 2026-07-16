@@ -7,7 +7,6 @@ This repository contains the SonarScan simulator used in the CoAqua paper.
 ### Prerequisites
 
 - Node.js
-- Python 3.10 or later
 
 Install the dependencies:
 
@@ -15,13 +14,7 @@ Install the dependencies:
 npm install
 ```
 
-Start the strategy server in one terminal:
-
-```bash
-npm run strategy-server
-```
-
-Start the simulator in another terminal:
+Start the simulator:
 
 ```bash
 npm run dev

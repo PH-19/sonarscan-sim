@@ -5,7 +5,6 @@ import { Dashboard } from './components/Dashboard';
 import { SimulationMetrics, Swimmer, Vector2 } from './types';
 import { POOL_LENGTH, POOL_WIDTH, SLEW_SPEED, SPEED_OF_SOUND, SWIMMER_SPEED_MAX, SWIMMER_SPEED_MIN } from './constants';
 import { createLCGRng, SeededRng } from './utils/rng';
-import { StrategyClient } from './services/StrategyClient';
 import { resolveUiBenchmarkSetup } from './services/sim/benchmark/UiBenchmarkSetup';
 import {
   applyBenchmarkScenarioEvent,
@@ -51,8 +50,6 @@ const engineOpt = new SimulationEngine({
 });
 resetEngineToBenchmarkScenario(engineNaive, UI_SETUP.scenario, UI_SETUP.sensorParams);
 resetEngineToBenchmarkScenario(engineOpt, UI_SETUP.scenario, UI_SETUP.sensorParams);
-
-const strategyClient = new StrategyClient();
 
 type RuntimeSlotName = 'baseline' | 'candidate';
 
@@ -312,8 +309,7 @@ function App() {
       const slot = runtime.slots[request.slot];
       const decision = await planUiStrategyDecision(
         slot.strategy,
-        slot.engine.getStrategySnapshot(),
-        strategyClient
+        slot.engine.getStrategySnapshot()
       );
       if (generation !== runtimeGenerationRef.current) return;
       slot.engine.applyStrategyDecision(decision);

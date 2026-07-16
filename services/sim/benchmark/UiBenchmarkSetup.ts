@@ -100,7 +100,7 @@ export const resolveUiBenchmarkSetup = (
     readValue(query, env, ['candidateStrategy', 'candidate'], ['VITE_CANDIDATE_STRATEGY'])
     ?? strategyList?.[1]
     ?? singleStrategy
-    ?? 'BELIEF_PSO_V3'
+    ?? 'ROUND_ROBIN_SECTOR'
   ).toUpperCase();
 
   const movementModelRaw = readValue(

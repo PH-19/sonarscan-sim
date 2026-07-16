@@ -19,7 +19,6 @@ import { MeasurementModel } from ${modulePath('services/sim/sonar/MeasurementMod
 import { fuseMultiSonarDetections } from ${modulePath('services/sim/perception/MultiSonarFusion.ts')};
 import { Tracker } from ${modulePath('services/sim/perception/Tracker.ts')};
 import { hungarianAssignment } from ${modulePath('utils/assignment.ts')};
-import { BenchmarkTruthOracleProvider } from ${modulePath('services/sim/strategy/BenchmarkTruthOracleProvider.ts')};
 import { makeSonarsByCount } from ${modulePath('services/sim/core/Scenario.ts')};
 
 const baseCommand = (patch = {}) => ({
@@ -504,15 +503,6 @@ const snapshotJson = JSON.stringify(engine.getStrategySnapshot());
 assert.equal(engine.getStrategySnapshot().physics.maxRange, 50, 'Ping360 command envelope should expose the official 50m maximum range');
 assert.equal(engine.getStrategySnapshot().physics.tdmaSlotCount, 1, 'TDMA should be disabled by default in strategy snapshots');
 assert.equal(snapshotJson.includes('truthId'), false, 'strategy snapshot must not contain truthId');
-const oracle = new BenchmarkTruthOracleProvider(() => [{
-  truthId: 'ORACLE_ONLY_TRUTH',
-  position: { x: 10, y: 25 },
-  velocity: { x: 0.5, y: 0 },
-}]);
-const oracleDecision = await oracle.plan(engine.getStrategySnapshot());
-assert.equal(oracleDecision.strategy, 'TRUTH_LOOKAHEAD_ORACLE');
-assert.ok(oracleDecision.plans.some(plan => plan.assignedTargetIds.includes('ORACLE_ONLY_TRUTH')), 'benchmark-only oracle should consume its isolated truth supplier');
-assert.ok(oracleDecision.plans.every(plan => plan.minLocalAngle >= 0 && plan.maxLocalAngle <= 180 && plan.range <= 50), 'oracle plans must obey physical command bounds');
 assert.equal(snapshotJson.includes('W_SECRET'), false, 'strategy snapshot must not expose swimmer truth id');
 
 const defaultTimingEngine = new SimulationEngine({ strategy: 'FULL_SCAN', evalSeed: 12 });
@@ -548,7 +538,7 @@ tdmaTimingEngine.applyStrategyDecision({
 });
 assert.equal(tdmaTimingEngine.update(8, { autoSchedule: false }).length, 0, 'explicit TDMA should keep the conservative slower multi-slot timing available');
 
-const schedulingEngine = new SimulationEngine({ strategy: 'PSO_V1', evalSeed: 9, tdmaEnabled: false });
+const schedulingEngine = new SimulationEngine({ strategy: 'ROUND_ROBIN_SECTOR', evalSeed: 9, tdmaEnabled: false });
 const fullPlans = schedulingEngine.sonars.map(sonar => ({
   sonarId: sonar.id,
   minLocalAngle: sonar.minLocalAngle,
@@ -557,13 +547,13 @@ const fullPlans = schedulingEngine.sonars.map(sonar => ({
   assignedTargetIds: [],
   action: 'FULL_SWEEP',
 }));
-schedulingEngine.applyStrategyDecision({ strategy: 'PSO_V1', generatedAt: 0, plans: fullPlans });
+schedulingEngine.applyStrategyDecision({ strategy: 'ROUND_ROBIN_SECTOR', generatedAt: 0, plans: fullPlans });
 const firstEvents = schedulingEngine.update(18, { autoSchedule: false });
 assert.equal(firstEvents.length, 4, 'first full-scan commands should complete');
 assert.ok(schedulingEngine.sonars.every(sonar => sonar.mode === 'IDLE'), 'autoSchedule false must leave completed sonars idle for a fresh decision');
 assert.ok(schedulingEngine.sonars.every(sonar => Math.abs(sonar.currentLocalAngle - 180) < 1e-6 && sonar.scanDirection === -1), 'first full sweep leg must end at local 180 and reverse direction');
 
-schedulingEngine.applyStrategyDecision({ strategy: 'PSO_V1', generatedAt: schedulingEngine.time, plans: fullPlans });
+schedulingEngine.applyStrategyDecision({ strategy: 'ROUND_ROBIN_SECTOR', generatedAt: schedulingEngine.time, plans: fullPlans });
 const reverseEvents = schedulingEngine.update(18, { autoSchedule: false });
 assert.equal(reverseEvents.length, 4, 'reverse full-scan commands should complete');
 assert.ok(schedulingEngine.sonars.every(sonar => Math.abs(sonar.currentLocalAngle) < 1e-6 && sonar.scanDirection === 1), 'second full sweep leg must return to local 0 and reverse direction');
@@ -576,12 +566,12 @@ const roiPlans = schedulingEngine.sonars.map(sonar => ({
   assignedTargetIds: ['T_NEW'],
   action: 'TRACK_ROI',
 }));
-schedulingEngine.applyStrategyDecision({ strategy: 'PSO_V1', generatedAt: schedulingEngine.time, plans: roiPlans });
+schedulingEngine.applyStrategyDecision({ strategy: 'ROUND_ROBIN_SECTOR', generatedAt: schedulingEngine.time, plans: roiPlans });
 const nextEvents = schedulingEngine.update(5, { autoSchedule: false });
 assert.equal(nextEvents.length, 4, 'fresh ROI commands should be the next completed commands');
 assert.ok(nextEvents.every(event => event.command.action === 'TRACK_ROI' && event.command.range === 12), 'no stale full scan may be inserted before the fresh ROI decision');
 
-const failureEngine = new SimulationEngine({ strategy: 'PSO_V1', evalSeed: 11, tdmaEnabled: false });
+const failureEngine = new SimulationEngine({ strategy: 'ROUND_ROBIN_SECTOR', evalSeed: 11, tdmaEnabled: false });
 const failurePlans = failureEngine.sonars.map(sonar => ({
   sonarId: sonar.id,
   minLocalAngle: sonar.minLocalAngle,
@@ -590,7 +580,7 @@ const failurePlans = failureEngine.sonars.map(sonar => ({
   assignedTargetIds: [],
   action: 'FULL_SWEEP',
 }));
-failureEngine.applyStrategyDecision({ strategy: 'PSO_V1', generatedAt: 0, plans: failurePlans });
+failureEngine.applyStrategyDecision({ strategy: 'ROUND_ROBIN_SECTOR', generatedAt: 0, plans: failurePlans });
 assert.equal(failureEngine.setSonarAvailable('S2', false), true);
 assert.equal(failureEngine.getStrategySnapshot().sonars.find(sonar => sonar.id === 'S2').available, false);
 const failureEvents = failureEngine.update(20, { autoSchedule: false });

@@ -175,7 +175,7 @@ export const resolveBenchmarkConfig = (raw: BenchmarkConfig): ResolvedBenchmarkC
   }
   const strategies = asArray(raw.strategies, raw.strategy, 'strategy or strategies').map(s => s.toUpperCase());
   if (strategies.includes('OPTIMIZED')) {
-    throw new Error('OPTIMIZED is ambiguous; benchmark configs must use BELIEF_PSO_V3 or a named baseline');
+    throw new Error('OPTIMIZED is ambiguous; use a named built-in scan mode');
   }
 
   const scenarios = optionalArray(raw.scenarios, raw.scenario);
