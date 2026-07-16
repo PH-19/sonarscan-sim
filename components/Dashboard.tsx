@@ -313,14 +313,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <input type="range" min="3" max="20" step="1" value={tuning.dbscanMinPts} onChange={e => updateTuning({ dbscanMinPts: Number(e.target.value) })} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-600" />
               </div>
             </div>
-            <div>
-              <div className="flex justify-between text-xs text-slate-500 mb-1">
-                <span>Kernel Cap</span>
-                <span className="font-mono">{tuning.kernelCap}</span>
-              </div>
-              <input type="range" min="3" max="13" step="2" value={tuning.kernelCap} onChange={e => updateTuning({ kernelCap: Number(e.target.value) })} className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-600" />
-            </div>
-
             <div className="p-3 bg-slate-50 rounded text-xs text-slate-500 leading-relaxed italic border border-slate-100">
               Adjust thresholds to balance False Alarm Rate vs. Detection Probability.
             </div>

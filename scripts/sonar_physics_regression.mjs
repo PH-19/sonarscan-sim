@@ -93,11 +93,9 @@ function expectedBeamIntervalSec(range, angularStepDeg, samplesPerBeam, pingSlot
   const motorStep = PHYSICS_CONTRACT.scanStepOverheadSec
     * Math.max(0.1, angularStepDeg)
     / Math.max(0.1, PHYSICS_CONTRACT.defaultAngularStepDeg);
-  return (
-    sampling * PHYSICS_CONTRACT.receiveGuardFactor
+  return sampling * PHYSICS_CONTRACT.receiveGuardFactor * Math.max(1, pingSlotCount)
     + PHYSICS_CONTRACT.processingOverheadSec
-    + motorStep
-  ) * Math.max(1, pingSlotCount);
+    + motorStep;
 }
 
 function slewBetweenLocalAngles(from, to) {
@@ -328,10 +326,13 @@ const slot4 = recordCase(
   'tdma_slot_sweep',
   'slots_4_90deg_20m',
   baseCommand({ commandId: 'slots-4', range: 20, endLocalAngle: 90, pingSlotCount: 4 }),
-  'Four TDMA slots multiply per-beam wait time.'
+  'Four TDMA slots multiply acoustic listen time only.'
 );
-assertClose(slot4.durationSec / slot1.durationSec, 4, 'TDMA slot duration ratio');
-passCheck('TDMA pingSlotCount multiplies per-beam command duration', '1 slot=' + slot1.durationSec + 's; 4 slots=' + slot4.durationSec + 's');
+assert.ok(
+  slot4.durationSec > slot1.durationSec && slot4.durationSec / slot1.durationSec < 4,
+  'TDMA should expand acoustic listen time without multiplying local motor/processing overhead'
+);
+passCheck('TDMA pingSlotCount multiplies acoustic listen time only', '1 slot=' + slot1.durationSec + 's; 4 slots=' + slot4.durationSec + 's');
 
 const noSlew = recordCase(
   'slew_reposition',
@@ -518,7 +519,7 @@ function markdownReport() {
     ['larger scan range increases 180deg command duration', '扫描量程增大时，180deg command 耗时递增'],
     ['larger angular sector increases command duration', '扫描角度范围增大时，command 耗时递增'],
     ['finer angular resolution increases command duration', '角分辨率更细时，command 耗时递增'],
-    ['TDMA pingSlotCount multiplies per-beam command duration', 'TDMA pingSlotCount 会按 slot 数放大每 beam 耗时'],
+    ['TDMA pingSlotCount multiplies acoustic listen time only', 'TDMA pingSlotCount 只按 slot 数放大声学收听时间'],
     ['initial mechanical slew is modeled separately from scan emission', '初始机械空转时间与发射扫描时间分开建模'],
     ['multi-window commands use per-window range and non-emitting gap slew', 'multi-window command 保留每个窗口的独立量程和非发射 gap slew'],
     ['1m / 360deg timing stays in Ping360 calibration window', '1m / 360deg 耗时位于 Ping360 标定窗口内'],
@@ -557,7 +558,7 @@ function markdownReport() {
     '## 公式合约',
     '',
     '- 每个发射窗口的 beam_count = floor(abs(endLocalAngle - scanStartLocalAngle) / angularStepDeg) + 1。',
-    '- beam_interval = max(2 * range / soundSpeed, samplesPerBeam * samplePeriodSec) * receiveGuardFactor + processingOverheadSec + scanStepOverheadSec * angularStepDeg / defaultAngularStepDeg。',
+    '- beam_interval = max(2 * range / soundSpeed, samplesPerBeam * samplePeriodSec) * receiveGuardFactor * tdmaSlotCount + processingOverheadSec + scanStepOverheadSec * angularStepDeg / defaultAngularStepDeg。',
     '- command 总耗时 = initial_slew + sum(window_beam_count * window_beam_interval) + gap_slew_between_scan_windows。',
     '',
     '## 物理常量',

@@ -2,15 +2,12 @@ import { Detection, SonarFrame, SonarState } from '../../../types';
 import {
   AQUASCAN_DBSCAN_EPS_BINS,
   AQUASCAN_DBSCAN_MIN_PTS,
-  AQUASCAN_KERNEL_CAP,
   AQUASCAN_MAX_ASPECT,
   AQUASCAN_MAX_CROSS_RANGE_M,
   AQUASCAN_MAX_RANGE_EXTENT_M,
   AQUASCAN_MIN_ASPECT,
   AQUASCAN_MIN_CROSS_RANGE_M,
   AQUASCAN_MIN_RANGE_EXTENT_M,
-  AQUASCAN_WEAK_ECHO_MIN,
-  AQUASCAN_WEAK_ECHO_PERCENTILE,
   IMAGING_NOISE_FLOOR,
   IMAGING_NOISE_TO_MEAS_SIGMA_M,
   IMAGING_RANGE_BINS,
@@ -21,12 +18,22 @@ import {
 import { degToRad } from '../../../utils/math';
 import { createLCGRng, hashStringToUint32 } from '../../../utils/rng';
 
+const DENSE_REFERENCE_ANGULAR_STEP_DEG = 360 / 400;
+const DENSE_REFERENCE_RANGE_STEP_M = 17 / 500;
+const SPARSE_PIPELINE_RESOLUTION_SCALE_THRESHOLD = 0.5;
+
 export type DetectorParams = {
   threshold: number;
   dbscanEpsBins: number;
   dbscanMinPts: number;
   noiseScale: number;
-  kernelCap: number;
+  minClusterCells?: number;
+  medianKernel?: number;
+  boxBlurRadius?: number;
+  robustNormalize?: boolean;
+  resolutionAware?: boolean;
+  narrowSectorThreshold?: number;
+  physicalFilter?: boolean;
 };
 
 type ClusterStats = {
@@ -49,10 +56,13 @@ export class Detector {
 
   detect(frame: SonarFrame, sonar: SonarState) {
     const nCells = frame.angleBins * frame.rangeBins;
-    const subtracted = this.backgroundSubtract(frame);
+    const filtered = this.preprocess(frame.intensities, frame);
+    const subtracted = this.backgroundSubtract(filtered);
     const mask = new Uint8Array(nCells);
     const labels = new Int32Array(nCells);
-    const threshold = this.params.threshold;
+    const threshold = this.usesSparseFramePipeline(frame)
+      ? this.params.narrowSectorThreshold ?? this.params.threshold
+      : this.params.threshold;
 
     for (let i = 0; i < nCells; i++) {
       mask[i] = subtracted[i] >= threshold ? 1 : 0;
@@ -75,8 +85,9 @@ export class Detector {
     clusters
       .filter(c => c.cells > 0 && c.sumI > 0)
       .sort((a, b) => b.sumI - a.sumI)
-      .slice(0, 24)
+      .slice(0, 128)
       .forEach((cluster, index) => {
+        if (cluster.cells < this.effectiveMinClusterCells(frame)) return;
         const aSpanBins = cluster.aMax - cluster.aMin + 1;
         const rSpanBins = cluster.rMax - cluster.rMin + 1;
         const aCent = cluster.sumA / cluster.sumI;
@@ -91,6 +102,18 @@ export class Detector {
 
         if (aSpanBins > 30) return;
         if (crossRangeM > 5.0) return;
+        const sparseFrame = this.usesSparseFramePipeline(frame);
+        if (this.params.physicalFilter && !sparseFrame) {
+          const aspect = crossRangeM / Math.max(1e-9, rangeSpanM);
+          if (
+            crossRangeM < AQUASCAN_MIN_CROSS_RANGE_M
+            || crossRangeM > AQUASCAN_MAX_CROSS_RANGE_M
+            || rangeSpanM < AQUASCAN_MIN_RANGE_EXTENT_M
+            || rangeSpanM > AQUASCAN_MAX_RANGE_EXTENT_M
+            || aspect < AQUASCAN_MIN_ASPECT
+            || aspect > AQUASCAN_MAX_ASPECT
+          ) return;
+        }
 
         const bearing = representativeBeam?.angle ?? frame.startAngle;
         const detectionTime = representativeBeam?.time ?? frame.endTime;
@@ -106,6 +129,7 @@ export class Detector {
 
         detections.push({
           id: `${frame.commandId}:d${index}`,
+          frameId: frame.commandId,
           time: detectionTime,
           sonarId: frame.sonarId,
           position: { x, y },
@@ -122,106 +146,185 @@ export class Detector {
         });
       });
 
-    return this.mergeNearbyDetections(detections, 2.0);
+    // Do not merge spatially close components here. Cardinality reduction is
+    // irreversible before track-conditioned association and is particularly
+    // harmful for the 0.9 m counter-flow separation in public lap lanes.
+    return detections;
   }
 
-  private mergeNearbyDetections(detections: Detection[], gateM: number) {
-    const merged: Detection[] = [];
-    for (const detection of detections.sort((a, b) => b.intensity - a.intensity)) {
-      const existing = merged.find(item => Math.hypot(
-        item.position.x - detection.position.x,
-        item.position.y - detection.position.y
-      ) <= gateM);
-      if (!existing) {
-        merged.push({ ...detection, position: { ...detection.position }, bbox: detection.bbox ? { ...detection.bbox } : undefined });
-        continue;
-      }
-      const totalIntensity = Math.max(1e-6, existing.intensity + detection.intensity);
-      existing.position = {
-        x: (existing.position.x * existing.intensity + detection.position.x * detection.intensity) / totalIntensity,
-        y: (existing.position.y * existing.intensity + detection.position.y * detection.intensity) / totalIntensity,
-      };
-      existing.range = (existing.range * existing.intensity + detection.range * detection.intensity) / totalIntensity;
-      existing.time = Math.max(existing.time, detection.time);
-      existing.confidence = 1 - (1 - existing.confidence) * (1 - detection.confidence);
-      existing.intensity = totalIntensity;
-      if (existing.bbox && detection.bbox) {
-        existing.bbox = {
-          aMin: Math.min(existing.bbox.aMin, detection.bbox.aMin),
-          aMax: Math.max(existing.bbox.aMax, detection.bbox.aMax),
-          rMin: Math.min(existing.bbox.rMin, detection.bbox.rMin),
-          rMax: Math.max(existing.bbox.rMax, detection.bbox.rMax),
-        };
-      }
+  private preprocess(input: Float32Array, frame: SonarFrame) {
+    const { angleBins, rangeBins } = frame;
+    let output = this.params.robustNormalize ? this.robustNormalize(input) : input;
+    const sparseFrame = this.usesSparseFramePipeline(frame);
+    const medianKernel = Math.max(1, Math.min(7, Math.floor(this.params.medianKernel ?? 1)));
+    if (medianKernel > 1 && !sparseFrame) {
+      output = this.medianFilter2D(output, angleBins, rangeBins, medianKernel);
     }
-    return merged;
+    const boxBlurRadius = Math.max(0, Math.min(4, Math.floor(this.params.boxBlurRadius ?? 0)));
+    if (boxBlurRadius > 0 && !sparseFrame) {
+      output = this.boxBlur2D(output, angleBins, rangeBins, boxBlurRadius);
+    }
+    return output;
   }
 
-  private backgroundSubtract(frame: SonarFrame) {
-    const out = new Float32Array(frame.intensities.length);
-
-    for (let a = 0; a < frame.angleBins; a++) {
-      const base = a * frame.rangeBins;
-      for (let r = 0; r < frame.rangeBins; r++) {
-        const v = frame.intensities[base + r] - IMAGING_NOISE_FLOOR;
-        out[base + r] = v > 0 ? v : 0;
-      }
+  private effectiveMinClusterCells(frame: SonarFrame) {
+    const configured = Math.max(0, Math.floor(this.params.minClusterCells ?? 0));
+    if (!this.params.resolutionAware || configured === 0) return configured;
+    if (this.usesSparseFramePipeline(frame)) {
+      return Math.min(configured, Math.max(1, Math.floor(this.params.dbscanMinPts)));
     }
+    const resolutionScale = this.frameResolutionScale(frame);
+    return Math.max(1, Math.round(configured * resolutionScale));
+  }
 
+  private frameResolutionScale(frame: SonarFrame) {
+    const angularStepDeg = frame.beams.length >= 2
+      ? Math.max(1e-6, Math.abs(frame.beams[frame.beams.length - 1].localAngle - frame.beams[0].localAngle) / (frame.beams.length - 1))
+      : Math.max(
+          1e-6,
+          Math.abs(frame.endLocalAngle - frame.startLocalAngle) / Math.max(1, frame.angleBins - 1)
+        );
+    const representativeRange = frame.beams[Math.floor(frame.beams.length / 2)]?.range ?? frame.range;
+    const rangeStepM = Math.max(1e-6, representativeRange / frame.rangeBins);
+    return Math.max(0.1, Math.min(
+      2,
+      (DENSE_REFERENCE_ANGULAR_STEP_DEG / angularStepDeg)
+        * (DENSE_REFERENCE_RANGE_STEP_M / rangeStepM)
+    ));
+  }
+
+  private usesSparseFramePipeline(frame: SonarFrame) {
+    return Boolean(
+      this.params.resolutionAware
+      && (
+        Math.abs(frame.endLocalAngle - frame.startLocalAngle) < 120
+        // The real-image morphology was calibrated around 0.9 degree x
+        // 0.034 m cells. A wide runtime frame can still be sparse when its
+        // range/angle cells are much larger; applying the dense-image kernel
+        // then erases a swimmer echo before clustering. Route by information
+        // density rather than field-of-view alone.
+        || this.frameResolutionScale(frame) < SPARSE_PIPELINE_RESOLUTION_SCALE_THRESHOLD
+      )
+    );
+  }
+
+  private robustNormalize(input: Float32Array) {
+    const positive: number[] = [];
+    for (let index = 0; index < input.length; index++) {
+      if (input[index] > 0) positive.push(input[index]);
+    }
+    const output = new Float32Array(input.length);
+    if (positive.length === 0) return output;
+    positive.sort((left, right) => left - right);
+    const at = (quantile: number) => positive[Math.max(
+      0,
+      Math.min(positive.length - 1, Math.floor((positive.length - 1) * quantile))
+    )];
+    const black = at(0.50);
+    const white = at(0.995);
+    const scale = Math.max(1e-9, white - black);
+    for (let index = 0; index < input.length; index++) {
+      output[index] = Math.max(0, Math.min(1, (input[index] - black) / scale));
+    }
+    return output;
+  }
+
+  private backgroundSubtract(input: Float32Array) {
+    const out = new Float32Array(input.length);
+    for (let index = 0; index < input.length; index++) {
+      const v = input[index] - IMAGING_NOISE_FLOOR;
+      out[index] = v > 0 ? v : 0;
+    }
     return out;
   }
 
-  private percentile(values: Float32Array, p: number, stride = 1) {
-    const sampled: number[] = [];
-    for (let i = 0; i < values.length; i += Math.max(1, stride)) sampled.push(values[i]);
-    if (sampled.length === 0) return 0;
-    sampled.sort((a, b) => a - b);
-    const idx = Math.max(0, Math.min(sampled.length - 1, Math.floor((sampled.length - 1) * p)));
-    return sampled[idx];
-  }
-
-  private adaptiveThreshold(values: Float32Array) {
-    let sum = 0;
-    let sumSq = 0;
-    let n = 0;
-    for (let i = 0; i < values.length; i += 5) {
-      const v = values[i];
-      sum += v;
-      sumSq += v * v;
-      n += 1;
-    }
-    if (n === 0) return 0;
-    const avg = sum / n;
-    const variance = Math.max(0, sumSq / n - avg * avg);
-    return avg + Math.sqrt(variance) * (0.9 + this.params.noiseScale * 0.2);
-  }
-
-  private normalizedKernelCap() {
-    const cap = Math.max(3, Math.min(13, Math.floor(this.params.kernelCap || AQUASCAN_KERNEL_CAP)));
-    return cap % 2 === 0 ? cap - 1 : cap;
-  }
-
-  private rangeDenoise(
-    input: Uint8Array,
-    output: Uint8Array,
+  private medianFilter2D(
+    input: Float32Array,
     angleBins: number,
     rangeBins: number,
     kernelSize: number
   ) {
-    const half = Math.floor(Math.max(1, kernelSize) / 2);
+    const size = kernelSize % 2 === 0 ? Math.max(1, kernelSize - 1) : kernelSize;
+    const half = Math.floor(size / 2);
+    const output = new Float32Array(input.length);
+    const window: number[] = [];
     for (let a = 0; a < angleBins; a++) {
-      const base = a * rangeBins;
       for (let r = 0; r < rangeBins; r++) {
-        let sum = 0;
-        let len = 0;
-        for (let rr = Math.max(0, r - half); rr <= Math.min(rangeBins - 1, r + half); rr++) {
-          sum += input[base + rr];
-          len += 1;
+        window.length = 0;
+        for (let da = -half; da <= half; da++) {
+          const aa = a + da;
+          if (aa < 0 || aa >= angleBins) continue;
+          const base = aa * rangeBins;
+          for (let dr = -half; dr <= half; dr++) {
+            const rr = r + dr;
+            if (rr < 0 || rr >= rangeBins) continue;
+            window.push(input[base + rr]);
+          }
         }
-        const need = Math.max(1, Math.ceil(len * 0.35));
-        output[base + r] = sum >= need ? 1 : 0;
+        window.sort((left, right) => left - right);
+        output[a * rangeBins + r] = window[Math.floor(window.length / 2)] ?? 0;
       }
     }
+    return output;
+  }
+
+  private boxBlur2D(
+    input: Float32Array,
+    angleBins: number,
+    rangeBins: number,
+    radius: number
+  ) {
+    const horizontal = new Float32Array(input.length);
+    const output = new Float32Array(input.length);
+    for (let a = 0; a < angleBins; a++) {
+      const base = a * rangeBins;
+      let sum = 0;
+      let count = 0;
+      for (let r = 0; r <= Math.min(rangeBins - 1, radius); r++) {
+        sum += input[base + r];
+        count += 1;
+      }
+      for (let r = 0; r < rangeBins; r++) {
+        if (r > 0) {
+          const entering = r + radius;
+          if (entering < rangeBins) {
+            sum += input[base + entering];
+            count += 1;
+          }
+          const leaving = r - radius - 1;
+          if (leaving >= 0) {
+            sum -= input[base + leaving];
+            count -= 1;
+          }
+        }
+        horizontal[base + r] = count > 0 ? sum / count : 0;
+      }
+    }
+    for (let r = 0; r < rangeBins; r++) {
+      let sum = 0;
+      let count = 0;
+      for (let a = 0; a <= Math.min(angleBins - 1, radius); a++) {
+        sum += horizontal[a * rangeBins + r];
+        count += 1;
+      }
+      for (let a = 0; a < angleBins; a++) {
+        if (a > 0) {
+          const entering = a + radius;
+          if (entering < angleBins) {
+            sum += horizontal[entering * rangeBins + r];
+            count += 1;
+          }
+          const leaving = a - radius - 1;
+          if (leaving >= 0) {
+            sum -= horizontal[leaving * rangeBins + r];
+            count -= 1;
+          }
+        }
+        output[a * rangeBins + r] = count > 0 ? sum / count : 0;
+      }
+    }
+
+    return output;
   }
 
   private dbscan(

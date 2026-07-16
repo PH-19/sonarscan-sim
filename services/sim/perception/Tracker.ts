@@ -4,23 +4,22 @@ import { angleToTarget } from '../../../utils/math';
 import { hungarianAssignment } from '../../../utils/assignment';
 import { createCV2D, getPositionCV2D, KalmanStateCV2D, predictCV2D, updateCV2D } from '../../../utils/kalman';
 
-const TRACK_SIGMA_ACCEL_BASE = 0.75;
-const TRACK_SIGMA_ACCEL_STALE = 1.65;
+const TRACK_SIGMA_ACCEL_BASE = 0.35;
+const TRACK_SIGMA_ACCEL_STALE = 1.0;
 const TRACK_SIGMA_ACCEL_RAMP_SEC = 8.0;
 const MEAS_SIGMA_BASE = 0.25;
 const MEAS_SIGMA_PER_M = 0.01;
-const ASSOCIATION_GATE_BASE_M = 3.4;
+const ASSOCIATION_GATE_BASE_M = 1.2;
 const ASSOCIATION_GATE_CHI2 = 25.0;
 const ASSOCIATION_ACCEPT_COST = 32.0;
 const DUMMY_ASSIGNMENT_COST = 34.0;
-const NEW_TRACK_SUPPRESSION_BASE_M = 1.4;
 const LOST_AFTER_SEC = 20.0;
 const CONFIRM_HITS = 3;
 const DELETE_MISSES = 8;
 const CONFIRM_EXISTENCE = 0.8;
 const COAST_EXISTENCE = 0.6;
 const DELETE_EXISTENCE = 0.06;
-const MISS_EXISTENCE_SURVIVAL = 0.78;
+const DEFAULT_MISS_EXISTENCE_SURVIVAL = 0.78;
 const VELOCITY_MEASUREMENT_BLEND_MAX = 0.18;
 
 type TrackState = {
@@ -55,6 +54,18 @@ const covarianceMatrix = (p: number[]) => [
 export class Tracker {
   private tracks = new Map<string, TrackState>();
   private nextTrackIndex = 1;
+  private laneConstraintEnabled = false;
+  private laneCount = 1;
+  private missExistenceSurvival = DEFAULT_MISS_EXISTENCE_SURVIVAL;
+
+  configureMissExistenceSurvival(survival: number) {
+    this.missExistenceSurvival = clamp(survival, 0, 1);
+  }
+
+  configureLaneConstraint(enabled: boolean, laneCount: number) {
+    this.laneConstraintEnabled = enabled;
+    this.laneCount = Math.max(1, Math.floor(laneCount));
+  }
 
   reset() {
     this.tracks.clear();
@@ -71,12 +82,18 @@ export class Tracker {
 
   update(now: number, detections: Detection[], observedFrames: SonarFrame[] = []) {
     const matchedTracks = new Set<string>();
-    const timeGroups: Detection[][] = [];
-    for (const detection of [...detections].sort((a, b) => a.time - b.time)) {
-      const group = timeGroups[timeGroups.length - 1];
-      if (!group || detection.time - group[group.length - 1].time > 0.5) timeGroups.push([detection]);
-      else group.push(detection);
+    const detectionsByFrame = new Map<string, Detection[]>();
+    for (const detection of detections) {
+      const fallbackFrameId = `${detection.sonarId}|${Math.round(detection.time * 1000)}`;
+      const frameId = detection.frameId ?? fallbackFrameId;
+      const group = detectionsByFrame.get(frameId) ?? [];
+      group.push(detection);
+      detectionsByFrame.set(frameId, group);
     }
+    const timeGroups = [...detectionsByFrame.values()].sort((left, right) => (
+      Math.min(...left.map(detection => detection.time))
+        - Math.min(...right.map(detection => detection.time))
+    ));
 
     for (const group of timeGroups) {
       const groupTime = Math.max(...group.map(detection => detection.time));
@@ -141,8 +158,9 @@ export class Tracker {
 
       for (const [detectionIndex, detection] of group.entries()) {
         if (usedDetections.has(detectionIndex)) continue;
-        if (this.shouldSuppressNewTrack(detection, groupTime)) continue;
-        const posVar = Math.max(4, Math.pow(MEAS_SIGMA_BASE + MEAS_SIGMA_PER_M * detection.range, 2) * 9);
+        const measurementSigma = MEAS_SIGMA_BASE + MEAS_SIGMA_PER_M * detection.range;
+        const posVar = Math.max(0.16, measurementSigma * measurementSigma * 4);
+        const circulationDirection = this.expectedLaneDirection(detection.position);
         const trackId = `T${String(this.nextTrackIndex++).padStart(4, '0')}`;
         this.tracks.set(trackId, {
           trackId,
@@ -150,10 +168,18 @@ export class Tracker {
             x: detection.position.x,
             y: detection.position.y,
             vx: 0,
-            vy: 0,
+            // Public lap swimming follows a known two-leg circulation path.
+            // Initialising the sign of longitudinal motion from the observed
+            // side of the lane is a geometry prior, not swimmer identity or
+            // ground truth.  It avoids spending several sparse scans learning
+            // whether a new track is travelling up or down the pool.
+            vy: circulationDirection === undefined ? 0 : circulationDirection * 0.7,
             t: detection.time,
             posVar,
-            velVar: 25,
+            // Swimmer speed is physically bounded at 1 m/s in this workload;
+            // a 5 m/s standard deviation makes nearby counter-flow hypotheses
+            // indistinguishable before velocity has even been observed.
+            velVar: SWIMMER_SPEED_MAX * SWIMMER_SPEED_MAX,
           }),
           createdAt: detection.time,
           lastUpdateAt: detection.time,
@@ -172,14 +198,12 @@ export class Tracker {
       }
     }
 
-    this.mergeDuplicateTracks(now, matchedTracks);
-
     for (const trackId of this.tracks.keys()) {
       if (matchedTracks.has(trackId)) continue;
       const track = this.tracks.get(trackId);
       if (track && (observedFrames.length === 0 || this.wasObservable(track, observedFrames))) {
         track.misses += 1;
-        track.existenceProbability *= MISS_EXISTENCE_SURVIVAL;
+        track.existenceProbability *= this.missExistenceSurvival;
       }
     }
 
@@ -235,68 +259,6 @@ export class Tracker {
     }
   }
 
-  private mergeDuplicateTracks(now: number, matchedTracks: Set<string>) {
-    const entries = [...this.tracks.entries()];
-    const predicted = new Map<string, KalmanStateCV2D>();
-    for (const [trackId, track] of entries) {
-      const state: KalmanStateCV2D = {
-        x: [...track.filter.x] as KalmanStateCV2D['x'],
-        P: [...track.filter.P],
-        t: track.filter.t,
-      };
-      predictCV2D(state, now, this.sigmaAccel(track, now));
-      this.reflectAtPoolBoundary(state);
-      predicted.set(trackId, state);
-    }
-
-    for (let i = 0; i < entries.length; i++) {
-      const [idA, trackA] = entries[i];
-      if (!this.tracks.has(idA)) continue;
-      const stateA = predicted.get(idA);
-      if (!stateA) continue;
-      for (let j = i + 1; j < entries.length; j++) {
-        const [idB, trackB] = entries[j];
-        if (!this.tracks.has(idB)) continue;
-        const stateB = predicted.get(idB);
-        if (!stateB) continue;
-        const separation = Math.hypot(stateA.x[0] - stateB.x[0], stateA.x[1] - stateB.x[1]);
-        const velocityDifference = Math.hypot(stateA.x[2] - stateB.x[2], stateA.x[3] - stateB.x[3]);
-        const bothConfirmed = trackA.confirmed && trackB.confirmed;
-        const maxSeparation = bothConfirmed ? 1.35 : 2.35;
-        const maxVelocityDifference = bothConfirmed ? 1.8 : 3.2;
-        if (separation > maxSeparation || velocityDifference > maxVelocityDifference) continue;
-
-        const [keepId, keep, removeId, remove] = trackA.confirmed !== trackB.confirmed
-          ? trackA.confirmed
-            ? [idA, trackA, idB, trackB]
-            : [idB, trackB, idA, trackA]
-          : trackA.hits >= trackB.hits
-          ? [idA, trackA, idB, trackB]
-          : [idB, trackB, idA, trackA];
-        keep.hits = Math.max(keep.hits, remove.hits);
-        keep.misses = Math.min(keep.misses, remove.misses);
-        keep.existenceProbability = Math.max(keep.existenceProbability, remove.existenceProbability);
-        keep.confirmed ||= remove.confirmed;
-        keep.createdAt = Math.min(keep.createdAt, remove.createdAt);
-        keep.lastUpdateAt = Math.max(keep.lastUpdateAt, remove.lastUpdateAt);
-        if (remove.lastMeasurement.time > keep.lastMeasurement.time) {
-          keep.lastMeasurement = {
-            position: { ...remove.lastMeasurement.position },
-            time: remove.lastMeasurement.time,
-          };
-        }
-        keep.reportedVelocity = {
-          x: (keep.reportedVelocity.x + remove.reportedVelocity.x) / 2,
-          y: (keep.reportedVelocity.y + remove.reportedVelocity.y) / 2,
-        };
-        for (const sonarId of remove.sourceSonars) keep.sourceSonars.add(sonarId);
-        this.tracks.delete(removeId);
-        if (matchedTracks.has(removeId)) matchedTracks.add(keepId);
-        if (removeId === idA) break;
-      }
-    }
-  }
-
   private buildAssociationCandidate(
     track: TrackState,
     detection: Detection,
@@ -315,6 +277,12 @@ export class Tracker {
       y: detection.position.y + track.filter.x[3] * delay,
     };
     const pos = getPositionCV2D(track.filter);
+    if (
+      this.laneConstraintEnabled
+      && this.laneIndex(pos.x) !== this.laneIndex(measurement.x)
+    ) {
+      return null;
+    }
     const dx = measurement.x - pos.x;
     const dy = measurement.y - pos.y;
     const euclidean = Math.hypot(dx, dy);
@@ -393,6 +361,18 @@ export class Tracker {
     const gateRatio = reachableGate > 1e-6 ? euclidean / reachableGate : 1;
     let cost = 0.62 * mahalanobis2 + 7.0 * gateRatio * gateRatio;
 
+    if (this.laneConstraintEnabled) {
+      const expectedDirection = this.expectedLaneDirection(detection.position);
+      const trackVy = track.filter.x[3];
+      if (
+        expectedDirection !== undefined
+        && Math.abs(trackVy) > 0.25
+        && Math.sign(trackVy) !== expectedDirection
+      ) {
+        cost += 10;
+      }
+    }
+
     const measurementDt = detection.time - track.lastMeasurement.time;
     if (measurementDt > 0.2) {
       const impliedVx = (detection.position.x - track.lastMeasurement.position.x) / measurementDt;
@@ -420,28 +400,6 @@ export class Tracker {
 
     void measurement;
     return cost;
-  }
-
-  private shouldSuppressNewTrack(detection: Detection, groupTime: number) {
-    for (const track of this.tracks.values()) {
-      if (track.existenceProbability < 0.22 && track.hits < 2) continue;
-      const state: KalmanStateCV2D = {
-        x: [...track.filter.x] as KalmanStateCV2D['x'],
-        P: [...track.filter.P],
-        t: track.filter.t,
-      };
-      predictCV2D(state, groupTime, this.sigmaAccel(track, groupTime));
-      this.reflectAtPoolBoundary(state);
-      const pos = getPositionCV2D(state);
-      const staleSec = Math.max(0, groupTime - track.lastUpdateAt);
-      const posSigma = Math.sqrt(Math.max(0, state.P[0] + state.P[5]));
-      const radius = NEW_TRACK_SUPPRESSION_BASE_M
-        + (track.confirmed ? 0.7 : 0)
-        + Math.min(1.8, 0.35 * staleSec)
-        + Math.min(1.2, 0.15 * posSigma);
-      if (distance(pos, detection.position) <= radius) return true;
-    }
-    return false;
   }
 
   private wasObservable(track: TrackState, frames: SonarFrame[]) {
@@ -505,5 +463,22 @@ export class Tracker {
     if (speed <= maxSpeed || speed <= 1e-9) return;
     state.x[2] *= maxSpeed / speed;
     state.x[3] *= maxSpeed / speed;
+  }
+
+  private laneIndex(x: number) {
+    const laneWidth = POOL_WIDTH / this.laneCount;
+    return Math.max(0, Math.min(this.laneCount - 1, Math.floor(x / laneWidth)));
+  }
+
+  private expectedLaneDirection(position: Vector2): -1 | 1 | undefined {
+    if (!this.laneConstraintEnabled) return undefined;
+    // Direction is ambiguous while a swimmer is executing the semicircular
+    // turn at either short end, so the prior is deliberately disabled there.
+    if (position.y < 1.25 || position.y > POOL_LENGTH - 1.25) return undefined;
+    const laneWidth = POOL_WIDTH / this.laneCount;
+    const laneCenter = (this.laneIndex(position.x) + 0.5) * laneWidth;
+    const lateralOffset = position.x - laneCenter;
+    if (Math.abs(lateralOffset) < 0.12) return undefined;
+    return lateralOffset < 0 ? 1 : -1;
   }
 }

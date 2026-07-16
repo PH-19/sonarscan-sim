@@ -41,7 +41,7 @@ const baseCommand = (patch = {}) => ({
 const timing = new SonarTimingModel();
 const defaultSonars = makeSonarsByCount();
 assert.equal(defaultSonars.length, 4, 'default scenario should keep four sonars');
-const layoutSummary = count => makeSonarsByCount(count).map(sonar => [
+const layoutSummary = (count, layout) => makeSonarsByCount(count, layout).map(sonar => [
   sonar.id,
   Number(sonar.position.x.toFixed(2)),
   Number(sonar.position.y.toFixed(2)),
@@ -60,30 +60,41 @@ assert.deepEqual(layoutSummary(3), [
   ['S3', 10, 50, 270],
 ]);
 assert.deepEqual(layoutSummary(4), [
-  ['S1', 0, 25, 0],
-  ['S2', 20, 25, 180],
-  ['S3', 10, 0, 90],
-  ['S4', 10, 50, 270],
-], 'default four-sonar layout should use one inward-facing sonar on each pool edge');
+  ['S1', 0, 6.25, 0],
+  ['S2', 20, 18.75, 180],
+  ['S3', 0, 31.25, 0],
+  ['S4', 20, 43.75, 180],
+], 'default four-sonar layout should use staggered cross-pool gates on the long edges');
 assert.deepEqual(layoutSummary(5), [
-  ['S1', 0, 16.67, 0],
-  ['S2', 0, 33.33, 0],
-  ['S3', 20, 25, 180],
-  ['S4', 10, 0, 90],
-  ['S5', 10, 50, 270],
+  ['S1', 0, 5, 0],
+  ['S2', 20, 15, 180],
+  ['S3', 0, 25, 0],
+  ['S4', 20, 35, 180],
+  ['S5', 0, 45, 0],
 ]);
 assert.deepEqual(layoutSummary(6), [
-  ['S1', 0, 16.67, 0],
-  ['S2', 20, 16.67, 180],
-  ['S3', 0, 33.33, 0],
-  ['S4', 20, 33.33, 180],
-  ['S5', 10, 0, 90],
-  ['S6', 10, 50, 270],
+  ['S1', 0, 4.17, 0],
+  ['S2', 20, 12.5, 180],
+  ['S3', 0, 20.83, 0],
+  ['S4', 20, 29.17, 180],
+  ['S5', 0, 37.5, 0],
+  ['S6', 20, 45.83, 180],
 ]);
-for (let count = 1; count <= 6; count += 1) {
+assert.deepEqual(layoutSummary(8, 'mixed_2_short'), [
+  ['S1', 0, 4.17, 0],
+  ['S2', 20, 12.5, 180],
+  ['S3', 0, 20.83, 0],
+  ['S4', 20, 29.17, 180],
+  ['S5', 0, 37.5, 0],
+  ['S6', 20, 45.83, 180],
+  ['S7', 10, 0, 90],
+  ['S8', 10, 50, 270],
+]);
+for (let count = 1; count <= 40; count += 1) {
   assert.equal(makeSonarsByCount(count).length, count, 'configured sonar count should generate matching layout size');
 }
-assert.throws(() => makeSonarsByCount(7), /sonarCount must be between 1 and 6/);
+assert.throws(() => makeSonarsByCount(41), /sonarCount must be between 1 and 40/);
+assert.throws(() => makeSonarsByCount(8, 'unknown'), /sonarLayout must be one of/);
 assert.deepEqual(
   hungarianAssignment([[1, 2], [1.1, 100]]),
   [1, 0],
@@ -490,7 +501,7 @@ engine.addSwimmer({
   enteredAt: 0,
 });
 const snapshotJson = JSON.stringify(engine.getStrategySnapshot());
-assert.equal(engine.getStrategySnapshot().physics.maxRange, 20, 'default full-scan strategy range should be 20m');
+assert.equal(engine.getStrategySnapshot().physics.maxRange, 50, 'Ping360 command envelope should expose the official 50m maximum range');
 assert.equal(engine.getStrategySnapshot().physics.tdmaSlotCount, 1, 'TDMA should be disabled by default in strategy snapshots');
 assert.equal(snapshotJson.includes('truthId'), false, 'strategy snapshot must not contain truthId');
 const oracle = new BenchmarkTruthOracleProvider(() => [{

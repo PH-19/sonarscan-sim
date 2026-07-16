@@ -14,13 +14,18 @@ export const PING360_SCAN_STEP_OVERHEAD_S = 0.005; // motor/communication overhe
 export const PING360_RECEIVE_GUARD_FACTOR = 1.1; // firmware/receive guard beyond nominal two-way travel
 export const SONAR_SAMPLE_PERIOD_S = 0.000005; // seconds per range sample
 
-// Ping360 can be configured beyond this in timing tests, but our default pool
-// deployment profile scans 20m because wall-mounted units cover the pool width.
-export const MAX_RANGE_NAIVE = 20; // meters
+// Blue Robotics specifies a configurable Ping360 range of 0.75-50 m. This is
+// the hardware command envelope, not the range that every scan should use.
+// Strategies should request the shortest range that covers their current ROI,
+// because receive time grows with acoustic round-trip distance.
+export const PING360_MIN_RANGE_M = 0.75;
+export const PING360_MAX_RANGE_M = 50;
+// Backward-compatible name used by the unchanged strategy snapshot layer.
+export const MAX_RANGE_NAIVE = PING360_MAX_RANGE_M;
 export const OPT_SWEEP_REPLAN_DEG = 6;
 
-export const SWIMMER_SPEED_MIN = 0.8; // m/s
-export const SWIMMER_SPEED_MAX = 1.8; // m/s
+export const SWIMMER_SPEED_MIN = 0.5; // m/s
+export const SWIMMER_SPEED_MAX = 1.0; // m/s
 
 // --- Imaging Sonar ---
 export const IMAGING_FOV_DEG = 2.0; // degrees
@@ -58,9 +63,6 @@ export const IMAGING_BACKGROUND_EMA_ALPHA = 0.05;
 export const IMAGING_BACKGROUND_UPDATE_SLACK = 0.12;
 
 // --- Detection parameters ---
-export const AQUASCAN_KERNEL_CAP = 11;
-export const AQUASCAN_WEAK_ECHO_PERCENTILE = 0.8;
-export const AQUASCAN_WEAK_ECHO_MIN = 0.15;
 
 export const AQUASCAN_DBSCAN_EPS_BINS = 2.5;
 export const AQUASCAN_DBSCAN_MIN_PTS = 4;

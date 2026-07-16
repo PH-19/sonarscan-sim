@@ -54,7 +54,9 @@ export class SonarTimingModel {
   private windowBeamCount(window: Pick<SonarCommandScanWindow, 'scanStartLocalAngle' | 'endLocalAngle'>, angularStepDeg: number) {
     const width = Math.abs(window.endLocalAngle - window.scanStartLocalAngle);
     const step = Math.max(0.1, angularStepDeg || this.config.defaultAngularStepDeg);
-    return Math.max(1, Math.floor(width / step) + 1);
+    // Decimal degree steps such as 178.2 / 2.7 can land just below an exact
+    // integer in binary floating point; retain the intended inclusive endpoint.
+    return Math.max(1, Math.floor(width / step + 1e-9) + 1);
   }
 
   private windowBeamIntervalSec(command: Pick<SonarCommand, 'angularStepDeg' | 'samplesPerBeam' | 'pingSlotCount'>, window: Pick<SonarCommandScanWindow, 'range'>) {
@@ -93,8 +95,12 @@ export class SonarTimingModel {
     const motorStep = this.config.scanStepOverheadSec
       * Math.max(0.1, command.angularStepDeg)
       / Math.max(0.1, this.config.defaultAngularStepDeg);
-    const singleSonarInterval = sampling * this.config.receiveGuardFactor + this.config.processingOverheadSec + motorStep;
-    return singleSonarInterval * Math.max(1, command.pingSlotCount);
+    // TDMA separates acoustic transmit/listen windows. Local motor stepping and
+    // processing do not become N times slower merely because N sonars share the
+    // acoustic channel.
+    const acousticListen = sampling * this.config.receiveGuardFactor
+      * Math.max(1, command.pingSlotCount);
+    return acousticListen + this.config.processingOverheadSec + motorStep;
   }
 
   effectiveSamplePeriodSec(command: Pick<SonarCommand, 'range' | 'samplesPerBeam'>) {

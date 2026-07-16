@@ -3,6 +3,7 @@ import {
   EngineFrameEvent,
   SonarCommand,
   SonarCommandScanWindow,
+  SonarFrame,
   SonarMode,
   SonarState,
   SonarStrategyPlan,
@@ -12,44 +13,83 @@ import {
   StrategyType,
   Swimmer,
   TrackBelief,
+  Detection,
+  SwimmerTruth,
 } from '../types';
 import {
   AQUASCAN_DBSCAN_EPS_BINS,
   AQUASCAN_DBSCAN_MIN_PTS,
-  AQUASCAN_KERNEL_CAP,
   IMAGING_RANGE_BINS,
   IMAGING_SPECKLE_PROB,
   IMAGING_THRESHOLD,
-  MAX_RANGE_NAIVE,
+  PING360_MAX_RANGE_M,
+  PING360_MIN_RANGE_M,
+  POOL_LANE_COUNT,
   SCAN_STEP_ANGLE,
 } from '../constants';
 import { SimulationClock } from './sim/core/SimulationClock';
-import { makeSonarsByCount, normalizeSonarCount } from './sim/core/Scenario';
+import {
+  DEFAULT_SONAR_LAYOUT,
+  makeSonarsByCount,
+  normalizeSonarCount,
+  normalizeSonarLayout,
+  SonarLayoutName,
+} from './sim/core/Scenario';
 import { WorldState } from './sim/core/WorldState';
 import { SonarTimingModel } from './sim/sonar/SonarTimingModel';
 import { SonarCommandScheduler } from './sim/sonar/SonarCommandScheduler';
-import { MeasurementModel } from './sim/sonar/MeasurementModel';
+import { MeasurementModel, MeasurementParams } from './sim/sonar/MeasurementModel';
 import { Detector } from './sim/perception/Detector';
 import { Tracker } from './sim/perception/Tracker';
-import { fuseMultiSonarDetections } from './sim/perception/MultiSonarFusion';
 import { Evaluator } from './sim/evaluation/Evaluator';
 import { StrategySnapshotBuilder } from './sim/strategy/StrategySnapshotBuilder';
 import { localToWorldBearing } from './sim/sonar/SonarCoordinates';
 
-export type EngineTuningParams = {
-  noiseScale: number;
-  speckleProb: number;
+export type EngineTuningParams = Omit<
+  MeasurementParams,
+  'rangeBins' | 'recoveryAngularStepDeg'
+> & {
   threshold: number;
   dbscanEpsBins: number;
   dbscanMinPts: number;
-  kernelCap: number;
+  detectorMinClusterCells?: number;
+  detectorMedianKernel?: number;
+  detectorBoxBlurRadius?: number;
+  detectorRobustNormalize?: boolean;
+  detectorResolutionAware?: boolean;
+  detectorNarrowSectorThreshold?: number;
+  detectorPhysicalFilter?: boolean;
+  trackerMissExistenceSurvival?: number;
 };
 
 export type EngineUpdateOptions = {
   autoSchedule?: boolean;
+  /** Optional audit hook for exporting the exact simulated sonar frame. */
+  onFrame?: (capture: {
+    frame: SonarFrame;
+    detections: Detection[];
+    tracks: TrackBelief[];
+    truthAtFrameEnd: SwimmerTruth[];
+  }) => void;
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+const DEFAULT_ENGINE_TUNING: EngineTuningParams = {
+  noiseScale: 0.30,
+  speckleProb: IMAGING_SPECKLE_PROB,
+  threshold: IMAGING_THRESHOLD,
+  dbscanEpsBins: AQUASCAN_DBSCAN_EPS_BINS,
+  dbscanMinPts: AQUASCAN_DBSCAN_MIN_PTS,
+  detectorMinClusterCells: 0,
+  detectorMedianKernel: 1,
+  detectorBoxBlurRadius: 0,
+  detectorRobustNormalize: false,
+  detectorResolutionAware: false,
+  detectorNarrowSectorThreshold: undefined,
+  detectorPhysicalFilter: false,
+  trackerMissExistenceSurvival: 0.78,
+};
 
 export class SimulationEngine {
   sonars: SonarState[] = [];
@@ -62,6 +102,8 @@ export class SimulationEngine {
   private readonly evalSeed: number;
   private readonly tdmaEnabled: boolean;
   private sonarCount: number;
+  private sonarLayout: SonarLayoutName;
+  private poolLaneCount = POOL_LANE_COUNT;
   private readonly clock = new SimulationClock();
   private readonly timing = new SonarTimingModel();
   private readonly scheduler = new SonarCommandScheduler(this.timing);
@@ -84,20 +126,15 @@ export class SimulationEngine {
     evalSeed?: number;
     tdmaEnabled?: boolean;
     sonarCount?: number;
+    sonarLayout?: SonarLayoutName;
   }) {
     this.strategy = opts?.strategy ?? 'NAIVE';
     this.comparisonRole = opts?.comparisonRole ?? 'BASELINE';
     this.evalSeed = opts?.evalSeed ?? 1337;
     this.tdmaEnabled = opts?.tdmaEnabled ?? false;
     this.sonarCount = normalizeSonarCount(opts?.sonarCount);
-    this.tuning = {
-      noiseScale: 0.30,
-      speckleProb: IMAGING_SPECKLE_PROB,
-      threshold: IMAGING_THRESHOLD,
-      dbscanEpsBins: AQUASCAN_DBSCAN_EPS_BINS,
-      dbscanMinPts: AQUASCAN_DBSCAN_MIN_PTS,
-      kernelCap: AQUASCAN_KERNEL_CAP,
-    };
+    this.sonarLayout = normalizeSonarLayout(opts?.sonarLayout ?? DEFAULT_SONAR_LAYOUT);
+    this.tuning = { ...DEFAULT_ENGINE_TUNING };
     this.world = new WorldState(this.evalSeed);
     this.measurement = new MeasurementModel(this.timing, this.evalSeed, {
       noiseScale: this.tuning.noiseScale,
@@ -108,8 +145,15 @@ export class SimulationEngine {
       dbscanEpsBins: this.tuning.dbscanEpsBins,
       dbscanMinPts: this.tuning.dbscanMinPts,
       noiseScale: this.tuning.noiseScale,
-      kernelCap: this.tuning.kernelCap,
+      minClusterCells: this.tuning.detectorMinClusterCells,
+      medianKernel: this.tuning.detectorMedianKernel,
+      boxBlurRadius: this.tuning.detectorBoxBlurRadius,
+      robustNormalize: this.tuning.detectorRobustNormalize,
+      resolutionAware: this.tuning.detectorResolutionAware,
+      narrowSectorThreshold: this.tuning.detectorNarrowSectorThreshold,
+      physicalFilter: this.tuning.detectorPhysicalFilter,
     });
+    this.tracker.configureMissExistenceSurvival(this.tuning.trackerMissExistenceSurvival ?? 0.78);
     this.reset();
   }
 
@@ -120,33 +164,85 @@ export class SimulationEngine {
     this.reset();
   }
 
+  setSonarLayout(layout: SonarLayoutName) {
+    const nextLayout = normalizeSonarLayout(layout);
+    if (nextLayout === this.sonarLayout) return;
+    this.sonarLayout = nextLayout;
+    this.reset();
+  }
+
+  setPoolLaneCount(count: number) {
+    this.poolLaneCount = Number.isFinite(count)
+      ? Math.max(1, Math.min(20, Math.floor(count)))
+      : POOL_LANE_COUNT;
+    this.measurement.setLaneCount(this.poolLaneCount);
+  }
+
+  setLaneConstrainedTracking(enabled: boolean) {
+    this.tracker.configureLaneConstraint(enabled, this.poolLaneCount);
+  }
+
+  getPoolLaneCount() {
+    return this.poolLaneCount;
+  }
+
+  setTuningProfile(next: EngineTuningParams) {
+    this.tuning = { ...DEFAULT_ENGINE_TUNING, ...next };
+    this.normalizeTuning();
+    this.applyTuning();
+  }
+
   setTuningParams(next: Partial<EngineTuningParams>) {
-    const merged: EngineTuningParams = { ...this.tuning, ...next };
-    merged.noiseScale = clamp(merged.noiseScale, 0, 5);
-    merged.speckleProb = clamp(merged.speckleProb, 0, 0.5);
-    merged.threshold = clamp(merged.threshold, 0, 10);
-    merged.dbscanEpsBins = clamp(merged.dbscanEpsBins, 0.5, 12);
-    merged.dbscanMinPts = clamp(merged.dbscanMinPts, 2, 200);
-    const cap = Math.floor(clamp(merged.kernelCap, 3, 13));
-    merged.kernelCap = cap % 2 === 0 ? cap - 1 : cap;
-    this.tuning = merged;
-    this.measurement.setParams({
-      noiseScale: merged.noiseScale,
-      speckleProb: merged.speckleProb,
-    });
+    this.tuning = { ...this.tuning, ...next };
+    this.normalizeTuning();
+    this.applyTuning();
+  }
+
+  private normalizeTuning() {
+    this.tuning.noiseScale = clamp(this.tuning.noiseScale, 0, 5);
+    this.tuning.speckleProb = clamp(this.tuning.speckleProb, 0, 0.5);
+    this.tuning.threshold = clamp(this.tuning.threshold, 0, 10);
+    this.tuning.dbscanEpsBins = clamp(this.tuning.dbscanEpsBins, 0.5, 12);
+    this.tuning.dbscanMinPts = clamp(this.tuning.dbscanMinPts, 2, 200);
+    this.tuning.detectorMinClusterCells = Math.floor(clamp(this.tuning.detectorMinClusterCells ?? 0, 0, 5000));
+    const medianKernel = Math.floor(clamp(this.tuning.detectorMedianKernel ?? 1, 1, 7));
+    this.tuning.detectorMedianKernel = medianKernel % 2 === 0 ? Math.max(1, medianKernel - 1) : medianKernel;
+    this.tuning.detectorBoxBlurRadius = Math.floor(clamp(this.tuning.detectorBoxBlurRadius ?? 0, 0, 4));
+    this.tuning.detectorRobustNormalize = Boolean(this.tuning.detectorRobustNormalize);
+    this.tuning.detectorResolutionAware = Boolean(this.tuning.detectorResolutionAware);
+    this.tuning.detectorNarrowSectorThreshold = this.tuning.detectorNarrowSectorThreshold === undefined
+      ? undefined
+      : clamp(this.tuning.detectorNarrowSectorThreshold, 0, 10);
+    this.tuning.detectorPhysicalFilter = Boolean(this.tuning.detectorPhysicalFilter);
+    this.tuning.trackerMissExistenceSurvival = clamp(
+      this.tuning.trackerMissExistenceSurvival ?? 0.78,
+      0,
+      1
+    );
+  }
+
+  private applyTuning() {
+    this.measurement.replaceParams(this.tuning);
     this.detector.setParams({
-      threshold: merged.threshold,
-      dbscanEpsBins: merged.dbscanEpsBins,
-      dbscanMinPts: merged.dbscanMinPts,
-      noiseScale: merged.noiseScale,
-      kernelCap: merged.kernelCap,
+      threshold: this.tuning.threshold,
+      dbscanEpsBins: this.tuning.dbscanEpsBins,
+      dbscanMinPts: this.tuning.dbscanMinPts,
+      noiseScale: this.tuning.noiseScale,
+      minClusterCells: this.tuning.detectorMinClusterCells,
+      medianKernel: this.tuning.detectorMedianKernel,
+      boxBlurRadius: this.tuning.detectorBoxBlurRadius,
+      robustNormalize: this.tuning.detectorRobustNormalize,
+      resolutionAware: this.tuning.detectorResolutionAware,
+      narrowSectorThreshold: this.tuning.detectorNarrowSectorThreshold,
+      physicalFilter: this.tuning.detectorPhysicalFilter,
     });
+    this.tracker.configureMissExistenceSurvival(this.tuning.trackerMissExistenceSurvival ?? 0.78);
   }
 
   reset() {
     this.clock.reset();
     this.time = 0;
-    this.sonars = makeSonarsByCount(this.sonarCount);
+    this.sonars = makeSonarsByCount(this.sonarCount, this.sonarLayout);
     this.world.reset();
     this.swimmers = this.world.swimmers;
     this.scheduler.reset();
@@ -265,10 +361,12 @@ export class SimulationEngine {
 
     if (completedFrames.length > 0) {
       const fusionTime = Math.max(...completedFrames.map(item => item.frame.endTime));
-      const fused = fuseMultiSonarDetections(completedFrames.flatMap(item => item.detections), fusionTime);
       this._trackBeliefs = this.tracker.update(
         fusionTime,
-        fused,
+        // Associate raw per-frame detections first. The Tracker may then
+        // sequentially absorb observations from different sonars into the
+        // same belief without ever averaging two nearby swimmers together.
+        completedFrames.flatMap(item => item.detections),
         completedFrames.map(item => item.frame)
       );
     }
@@ -282,6 +380,12 @@ export class SimulationEngine {
         this._trackBeliefs,
         time => this.world.sampleAt(time)
       );
+      opts.onFrame?.({
+        frame,
+        detections,
+        tracks: this._trackBeliefs,
+        truthAtFrameEnd,
+      });
 
       sonar.lastScanTime = frame.endTime;
       sonar.cycleDuration = frame.endTime - frame.startTime;
@@ -455,7 +559,7 @@ export class SimulationEngine {
     return {
       minLocalAngle: lo,
       maxLocalAngle: hi,
-      range: clamp(raw.range ?? plan.range, 1, MAX_RANGE_NAIVE),
+      range: clamp(raw.range ?? plan.range, PING360_MIN_RANGE_M, PING360_MAX_RANGE_M),
       assignedTargetIds: Array.isArray(raw.assignedTargetIds) ? [...raw.assignedTargetIds] : [],
     };
   }
@@ -469,8 +573,10 @@ export class SimulationEngine {
         sonarId: sonar.id,
         minLocalAngle: sonar.minLocalAngle,
         maxLocalAngle: sonar.maxLocalAngle,
-        range: clamp(raw.range, 1, MAX_RANGE_NAIVE),
-        angularStepDeg: Number.isFinite(raw.angularStepDeg) ? clamp(raw.angularStepDeg ?? SCAN_STEP_ANGLE, 0.1, 6.0) : undefined,
+        range: clamp(raw.range, PING360_MIN_RANGE_M, PING360_MAX_RANGE_M),
+        angularStepDeg: Number.isFinite(raw.angularStepDeg)
+          ? clamp(raw.angularStepDeg ?? SCAN_STEP_ANGLE, 0.1, 6.0)
+          : undefined,
         assignedTargetIds: Array.isArray(raw.assignedTargetIds) ? [...raw.assignedTargetIds] : [],
         action: raw.action,
       };
@@ -480,8 +586,10 @@ export class SimulationEngine {
       sonarId: sonar.id,
       minLocalAngle,
       maxLocalAngle,
-      range: clamp(raw.range, 1, MAX_RANGE_NAIVE),
-      angularStepDeg: Number.isFinite(raw.angularStepDeg) ? clamp(raw.angularStepDeg ?? SCAN_STEP_ANGLE, 0.1, 6.0) : undefined,
+      range: clamp(raw.range, PING360_MIN_RANGE_M, PING360_MAX_RANGE_M),
+      angularStepDeg: Number.isFinite(raw.angularStepDeg)
+        ? clamp(raw.angularStepDeg ?? SCAN_STEP_ANGLE, 0.1, 6.0)
+        : undefined,
       assignedTargetIds: Array.isArray(raw.assignedTargetIds) ? [...raw.assignedTargetIds] : [],
       action: raw.action,
       scanWindows: Array.isArray(raw.scanWindows)
@@ -490,8 +598,10 @@ export class SimulationEngine {
             sonarId: sonar.id,
             minLocalAngle,
             maxLocalAngle,
-            range: clamp(raw.range, 1, MAX_RANGE_NAIVE),
-            angularStepDeg: Number.isFinite(raw.angularStepDeg) ? clamp(raw.angularStepDeg ?? SCAN_STEP_ANGLE, 0.1, 6.0) : undefined,
+            range: clamp(raw.range, PING360_MIN_RANGE_M, PING360_MAX_RANGE_M),
+            angularStepDeg: Number.isFinite(raw.angularStepDeg)
+              ? clamp(raw.angularStepDeg ?? SCAN_STEP_ANGLE, 0.1, 6.0)
+              : undefined,
             assignedTargetIds: [],
             action: raw.action,
           }, window))
@@ -505,7 +615,7 @@ export class SimulationEngine {
       sonarId: sonar.id,
       minLocalAngle: sonar.minLocalAngle,
       maxLocalAngle: sonar.maxLocalAngle,
-      range: MAX_RANGE_NAIVE,
+      range: PING360_MAX_RANGE_M,
       assignedTargetIds: [],
       action: 'FULL_SWEEP',
     };
